@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import {
   FileSpreadsheet,
   FileText,
@@ -283,6 +284,42 @@ export default function LaporanHarian() {
           </table>
         </div>
       </Card>
+
+      {/* Rincian barang free per alasan */}
+      {data?.free_per_alasan?.length > 0 && (
+        <Card className="border-slate-200 shadow-none rounded-lg overflow-hidden" data-testid="harian-free-table">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+            <h3 className="font-heading font-semibold text-slate-800">Rincian Barang Free</h3>
+            <span className="text-sm text-slate-500">
+              Total modal: <span className="font-bold text-amber-600 tabular">{rupiah(t?.free_hpp || 0)}</span>
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr className="text-xs uppercase tracking-wide text-slate-500">
+                  <th className="text-left py-2.5 px-3">Alasan</th>
+                  <th className="text-right py-2.5 px-3">Jumlah Transaksi</th>
+                  <th className="text-right py-2.5 px-3">Total Qty</th>
+                  <th className="text-right py-2.5 px-3">Modal (HPP)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.free_per_alasan.map((f) => (
+                  <tr key={f.alasan} className="border-t border-slate-100 hover:bg-slate-50" data-testid={`harian-free-row-${f.alasan}`}>
+                    <td className="py-2.5 px-3">
+                      <Badge className="bg-violet-100 text-violet-700 border-violet-200 hover:bg-violet-200">{f.alasan}</Badge>
+                    </td>
+                    <td className="py-2.5 px-3 text-right tabular text-slate-700">{f.jumlah_txn}</td>
+                    <td className="py-2.5 px-3 text-right tabular text-slate-700">{f.qty}</td>
+                    <td className="py-2.5 px-3 text-right font-semibold tabular text-amber-600">{rupiah(f.hpp)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* Keterangan rumus */}
       <Card className="p-5 border-slate-200 shadow-none rounded-lg" data-testid="harian-rumus">

@@ -61,6 +61,9 @@ export default function Transaksi() {
   const [tanggal, setTanggal] = useState(today());
   const [customerId, setCustomerId] = useState("");
   const [status, setStatus] = useState("lunas");
+  const [freeReasons, setFreeReasons] = useState(["Promo", "Sampel", "Pemakaian Sendiri", "Lainnya"]);
+  const [freeAlasan, setFreeAlasan] = useState("Promo");
+  const [freeAlasanManual, setFreeAlasanManual] = useState("");
   const [catatan, setCatatan] = useState("");
   const [items, setItems] = useState([emptyItem()]);
 
@@ -79,6 +82,10 @@ export default function Transaksi() {
   useEffect(() => {
     api.get("/products").then((r) => setProducts(r.data));
     api.get("/customers").then((r) => setCustomers(r.data));
+    api
+      .get("/transactions/free-reasons")
+      .then((r) => Array.isArray(r.data) && r.data.length && setFreeReasons(r.data))
+      .catch(() => {});
   }, []);
   useEffect(() => {
     loadTxns();
@@ -112,6 +119,8 @@ export default function Transaksi() {
     setTanggal(today());
     setCustomerId("");
     setStatus("lunas");
+    setFreeAlasan("Promo");
+    setFreeAlasanManual("");
     setCatatan("");
     setItems([emptyItem()]);
   };
@@ -122,10 +131,15 @@ export default function Transaksi() {
     if (!c && !isFree) return toast.error("Pilih customer terlebih dahulu");
     const validItems = items.filter((it) => it.product_id && it.variant_label && Number(it.qty) > 0);
     if (!validItems.length) return toast.error("Tambahkan minimal satu item produk");
+    const alasanFinal =
+      freeAlasan === "Lainnya" ? freeAlasanManual.trim() : freeAlasan;
+    if (isFree && freeAlasan === "Lainnya" && !alasanFinal)
+      return toast.error("Tulis alasan barang free-nya");
     const payload = {
       tanggal,
       customer_id: customerId,
       customer_nama: c ? c.nama : "Pemakaian Sendiri",
+      free_alasan: isFree ? alasanFinal : "",
       status,
       catatan,
       items: validItems.map((it) => ({
@@ -140,6 +154,11 @@ export default function Transaksi() {
     try {
       await api.post("/transactions", payload);
       toast.success("Transaksi berhasil disimpan");
+      if (isFree)
+        api
+          .get("/transactions/free-reasons")
+          .then((r) => Array.isArray(r.data) && r.data.length && setFreeReasons(r.data))
+          .catch(() => {});
       resetForm();
       loadTxns();
     } catch (e) {
@@ -245,15 +264,48 @@ export default function Transaksi() {
 
         {status === "free" && (
           <div
-            className="flex items-start gap-2 rounded-md border border-violet-200 bg-violet-50 px-3 py-2.5 mb-4 text-sm text-violet-800"
+            className="rounded-md border border-violet-200 bg-violet-50 px-3 py-3 mb-4"
             data-testid="free-info"
           >
-            <Gift className="h-4 w-4 mt-0.5 shrink-0" />
-            <span>
-              Transaksi <b>Free</b>: omset dicatat <b>Rp 0</b>, tetapi modal/HPP dari pabrik tetap dihitung
-              sehingga mengurangi laba. Customer boleh dikosongkan (akan tercatat sebagai
-              &quot;Pemakaian Sendiri&quot;).
-            </span>
+            <div className="flex items-start gap-2 text-sm text-violet-800">
+              <Gift className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>
+                Transaksi <b>Free</b>: omset dicatat <b>Rp 0</b>, tetapi modal/HPP dari pabrik tetap dihitung
+                sehingga mengurangi laba. Customer boleh dikosongkan (akan tercatat sebagai
+                &quot;Pemakaian Sendiri&quot;).
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+              <div>
+                <Label className="text-xs font-semibold uppercase tracking-wide text-violet-700">
+                  Alasan Barang Free
+                </Label>
+                <Select value={freeAlasan} onValueChange={setFreeAlasan}>
+                  <SelectTrigger className="mt-1.5 bg-white" data-testid="free-alasan">
+                    <SelectValue placeholder="Pilih alasan" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {freeReasons.map((a) => (
+                      <SelectItem key={a} value={a}>{a}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {freeAlasan === "Lainnya" && (
+                <div>
+                  <Label className="text-xs font-semibold uppercase tracking-wide text-violet-700">
+                    Tulis Alasan Sendiri
+                  </Label>
+                  <Input
+                    value={freeAlasanManual}
+                    onChange={(e) => setFreeAlasanManual(e.target.value)}
+                    placeholder="mis. Ganti barang rusak"
+                    className="mt-1.5 bg-white"
+                    data-testid="free-alasan-manual"
+                  />
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -442,6 +494,11 @@ export default function Transaksi() {
                         ))}
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    {t.status === "free" && (
+                      <p className="text-[11px] text-violet-600 mt-1" data-testid={`free-alasan-${t.id}`}>
+                        {t.free_alasan || "Pemakaian Sendiri"}
+                      </p>
+                    )}
                   </td>
                   <td className="py-2.5 px-3 text-center">
                     <Button size="icon" variant="ghost" onClick={() => setDeleteId(t.id)} data-testid={`delete-txn-${t.id}`}>

@@ -1,10 +1,18 @@
 [
   {
-    "content": "Jalankan testing_agent_v3 untuk E2E fitur baru",
+    "content": "Backend: field free_alasan + endpoint /transactions/free-reasons + tampil di export & laporan harian",
     "status": "completed"
   },
   {
-    "content": "Bersihkan data sisa hasil pengujian otomatis",
+    "content": "Frontend: dropdown alasan Free (+ input manual) di Transaksi & kartu Rincian Barang Free di Laporan Harian",
+    "status": "completed"
+  },
+  {
+    "content": "Uji fitur alasan Free via testing_agent_v3",
+    "status": "completed"
+  },
+  {
+    "content": "Reset semua data (transaksi, PO, pengeluaran, setoran, produk, customer)",
     "status": "completed"
   }
 ]

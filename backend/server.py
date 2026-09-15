@@ -142,7 +142,14 @@ class TransactionInput(BaseModel):
     # lunas = sudah dibayar | kredit = belum dibayar (piutang)
     # free  = barang gratis / promo / pemakaian sendiri -> omset Rp 0 tapi HPP tetap dihitung
     status: Literal["lunas", "kredit", "free"] = "lunas"
+    # Alasan barang free (promo / sampel / pemakaian sendiri / teks manual).
+    # Hanya dipakai bila status = free.
+    free_alasan: str = ""
     catatan: str = ""
+
+# Alasan bawaan untuk barang free. User tetap bisa menulis alasan sendiri (manual)
+# dan alasan itu akan otomatis muncul sebagai pilihan berikutnya.
+FREE_REASONS_DEFAULT = ["Promo", "Sampel", "Pemakaian Sendiri", "Lainnya"]
 
 # ----------------------- PO Pabrik & Pengeluaran -----------------------
 
@@ -415,28 +422,40 @@ def normalize_txn(data: TransactionInput):
     Customer boleh kosong untuk pemakaian sendiri.
     """
     items = data.items
+    alasan = (data.free_alasan or "").strip()
     if data.status == "free":
         for i in items:
             i.harga_satuan = 0
             i.subtotal = 0
+        if not alasan:
+            alasan = "Pemakaian Sendiri"
+    else:
+        alasan = ""
     nama = (data.customer_nama or "").strip()
     if not nama:
         if data.status == "free":
             nama = "Pemakaian Sendiri"
         else:
             raise HTTPException(status_code=422, detail="Customer wajib dipilih")
-    return items, nama
+    return items, nama, alasan
+
+@api_router.get("/transactions/free-reasons")
+async def free_reasons(user: dict = Depends(get_current_user)):
+    """Daftar alasan barang free: bawaan + alasan manual yang pernah dipakai."""
+    used = await db.transactions.distinct("free_alasan", {"status": "free"})
+    extra = sorted({(u or "").strip() for u in used if (u or "").strip()} - set(FREE_REASONS_DEFAULT))
+    return FREE_REASONS_DEFAULT + extra
 
 @api_router.post("/transactions")
 async def create_transaction(data: TransactionInput, user: dict = Depends(get_current_user)):
-    items, customer_nama = normalize_txn(data)
+    items, customer_nama, free_alasan = normalize_txn(data)
     total = sum(i.subtotal for i in items)
     enriched = await enrich_items_with_hpp(items)
     total_hpp = sum(i["hpp_subtotal"] for i in enriched)
     doc = {"id": str(uuid.uuid4()), "tanggal": data.tanggal, "customer_id": data.customer_id,
            "customer_nama": customer_nama, "items": enriched,
            "total": total, "total_hpp": total_hpp, "laba_kotor": total - total_hpp,
-           "status": data.status, "catatan": data.catatan,
+           "status": data.status, "free_alasan": free_alasan, "catatan": data.catatan,
            "created_at": datetime.now(timezone.utc).isoformat()}
     await db.transactions.insert_one(doc.copy())
     doc.pop("_id", None)
@@ -444,7 +463,7 @@ async def create_transaction(data: TransactionInput, user: dict = Depends(get_cu
 
 @api_router.put("/transactions/{txn_id}")
 async def update_transaction(txn_id: str, data: TransactionInput, user: dict = Depends(get_current_user)):
-    items, customer_nama = normalize_txn(data)
+    items, customer_nama, free_alasan = normalize_txn(data)
     total = sum(i.subtotal for i in items)
     enriched = await enrich_items_with_hpp(items)
     total_hpp = sum(i["hpp_subtotal"] for i in enriched)
@@ -452,7 +471,7 @@ async def update_transaction(txn_id: str, data: TransactionInput, user: dict = D
         "tanggal": data.tanggal, "customer_id": data.customer_id, "customer_nama": customer_nama,
         "items": enriched, "total": total, "total_hpp": total_hpp,
         "laba_kotor": total - total_hpp,
-        "status": data.status, "catatan": data.catatan}})
+        "status": data.status, "free_alasan": free_alasan, "catatan": data.catatan}})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan")
     return await db.transactions.find_one({"id": txn_id}, {"_id": 0})
@@ -478,11 +497,12 @@ async def update_status(txn_id: str, body: dict, user: dict = Depends(get_curren
             it["harga_satuan"] = 0
             it["subtotal"] = 0
         total_hpp = sum(float(i.get("hpp_subtotal") or 0) for i in items)
+        alasan = (body.get("free_alasan") or txn.get("free_alasan") or "").strip() or "Pemakaian Sendiri"
         await db.transactions.update_one({"id": txn_id}, {"$set": {
-            "status": "free", "items": items, "total": 0,
+            "status": "free", "items": items, "total": 0, "free_alasan": alasan,
             "total_hpp": total_hpp, "laba_kotor": -total_hpp}})
     else:
-        await db.transactions.update_one({"id": txn_id}, {"$set": {"status": status}})
+        await db.transactions.update_one({"id": txn_id}, {"$set": {"status": status, "free_alasan": ""}})
     return {"message": "Status diperbarui"}
 
 @api_router.delete("/transactions/{txn_id}")
@@ -1070,7 +1090,20 @@ async def compute_harian(date_from: str, date_to: str):
     total = {k: sum(d[k] for d in per_hari) for k in keys}
     total["hari_aktif"] = len(per_hari)
 
-    return {"date_from": date_from, "date_to": date_to, "per_hari": per_hari, "total": total}
+    # Rincian modal barang free per alasan (promo / sampel / pemakaian sendiri / manual)
+    per_alasan = {}
+    for t in txns:
+        if t.get("status") != "free":
+            continue
+        key = (t.get("free_alasan") or "").strip() or "Pemakaian Sendiri"
+        row = per_alasan.setdefault(key, {"alasan": key, "hpp": 0, "jumlah_txn": 0, "qty": 0})
+        row["hpp"] += txn_hpp(t)
+        row["jumlah_txn"] += 1
+        row["qty"] += sum(float(i.get("qty") or 0) for i in t.get("items", []))
+    free_per_alasan = sorted(per_alasan.values(), key=lambda x: x["hpp"], reverse=True)
+
+    return {"date_from": date_from, "date_to": date_to, "per_hari": per_hari, "total": total,
+            "free_per_alasan": free_per_alasan}
 
 def resolve_range(year, month, date_from, date_to):
     """Mode bulan (year+month) atau mode rentang tanggal bebas."""
@@ -1107,6 +1140,14 @@ TXN_STATUS_LABEL = {"lunas": "Lunas", "kredit": "Kredit", "free": "Free"}
 def status_label(s):
     return TXN_STATUS_LABEL.get(s, s or "-")
 
+def status_text(t):
+    """Label status + alasan bila barang free, mis. 'Free (Promo)'."""
+    label = status_label(t.get("status"))
+    alasan = (t.get("free_alasan") or "").strip()
+    if t.get("status") == "free" and alasan:
+        return f"{label} ({alasan})"
+    return label
+
 async def fetch_txns(date_from, date_to, customer_id, status):
     q = build_txn_query(date_from, date_to, customer_id, status)
     return await db.transactions.find(q, {"_id": 0}).sort("tanggal", 1).to_list(10000)
@@ -1133,7 +1174,7 @@ async def export_excel(date_from: Optional[str] = None, date_to: Optional[str] =
             hpp = float(it.get("hpp_subtotal") or 0)
             ws.append([t["tanggal"], t["customer_nama"], it["product_nama"], it["variant_label"],
                        it["harga_satuan"], it["qty"], sub, hpp, sub - hpp,
-                       status_label(t["status"])])
+                       status_text(t)])
     total = sum(t["total"] for t in txns)
     total_hpp = sum(txn_hpp(t) for t in txns)
     ws.append([])
@@ -1171,7 +1212,7 @@ async def export_pdf(date_from: Optional[str] = None, date_to: Optional[str] = N
             data.append([t["tanggal"], t["customer_nama"], it["product_nama"], it["variant_label"],
                          rupiah(it["harga_satuan"]), str(int(float(it["qty"]))),
                          rupiah(sub), rupiah(hpp), rupiah(sub - hpp),
-                         status_label(t["status"])])
+                         status_text(t)])
     total = sum(t["total"] for t in txns)
     total_hpp = sum(txn_hpp(t) for t in txns)
     data.append(["", "", "", "", "", "", rupiah(total), rupiah(total_hpp), rupiah(total - total_hpp), "TOTAL"])
@@ -1478,6 +1519,16 @@ async def export_harian_excel(year: Optional[int] = None, month: Optional[int] =
                 t["hpp"], t["laba_kotor"], t["free_hpp"], t["pembelian"],
                 t["pembayaran_pabrik"], t["operasional"], t["laba_bersih"]])
 
+    if r.get("free_per_alasan"):
+        ws3 = wb.create_sheet("Barang Free")
+        ws3.append(["Alasan", "Jumlah Transaksi", "Total Qty", "Modal (HPP)"])
+        _style_header(ws3, 4)
+        for f in r["free_per_alasan"]:
+            ws3.append([f["alasan"], f["jumlah_txn"], f["qty"], f["hpp"]])
+        ws3.append([])
+        ws3.append(["TOTAL", sum(f["jumlah_txn"] for f in r["free_per_alasan"]),
+                    sum(f["qty"] for f in r["free_per_alasan"]), t["free_hpp"]])
+
     return _xlsx_response(wb, f"laporan_harian_{df}_sd_{dt}.xlsx")
 
 @api_router.get("/export/harian/pdf")
@@ -1528,6 +1579,16 @@ async def export_harian_pdf(year: Optional[int] = None, month: Optional[int] = N
         ["Sudah Disetor", rupiah(t["disetor"])],
         ["SELISIH", rupiah(t["selisih"])],
     ], col_widths=[300, 260]))
+
+    if r.get("free_per_alasan"):
+        elems.append(Spacer(1, 14))
+        elems.append(Paragraph("Rincian Barang Free", h))
+        fdata = [["Alasan", "Jml Transaksi", "Total Qty", "Modal (HPP)"]]
+        for f in r["free_per_alasan"]:
+            fdata.append([f["alasan"], str(f["jumlah_txn"]), str(int(f["qty"])), rupiah(f["hpp"])])
+        fdata.append(["TOTAL", str(sum(f["jumlah_txn"] for f in r["free_per_alasan"])),
+                      str(int(sum(f["qty"] for f in r["free_per_alasan"]))), rupiah(t["free_hpp"])])
+        elems.append(_pdf_table(fdata, col_widths=[240, 110, 110, 140]))
 
     elems.append(Spacer(1, 10))
     elems.append(Paragraph(
@@ -1638,7 +1699,7 @@ async def startup():
                                    "created_at": datetime.now(timezone.utc).isoformat()})
         logger.info("Admin dibuat")
 
-    if await db.products.count_documents({}) == 0:
+    if await db.products.count_documents({}) == 0 and await db.meta.count_documents({"key": "products_seeded"}) == 0:
         for nama, labels in SEED_PRODUCTS:
             variants = []
             for lb in labels:
@@ -1646,6 +1707,8 @@ async def startup():
                 variants.append({"label": lb, "harga_pabrik": 0, "harga_so": s})
             await db.products.insert_one({"id": str(uuid.uuid4()), "nama": nama, "variants": variants,
                                           "created_at": datetime.now(timezone.utc).isoformat()})
+        await db.meta.insert_one({"key": "products_seeded",
+                                  "at": datetime.now(timezone.utc).isoformat()})
         logger.info("Produk awal dibuat")
 
     await migrate_harga_pabrik()

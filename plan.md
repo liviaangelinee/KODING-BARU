@@ -5,34 +5,43 @@
 - **Stack**: React (Shadcn UI + Tailwind + Recharts) + FastAPI + MongoDB.
 - **Backend**:
   - Fitur **Kredit/Free**, **Setoran**, **Laporan Harian**, dan **Export Harian** sudah **selesai & teruji**.
-  - **Dashboard stats** sudah ditambah field baru:
+  - **Dashboard stats** sudah ditambah field:
     - `setoran_hari_ini`
     - `setoran_bulan`
     - `free_hpp_bulan`
     - `tanggal_hari_ini`
-  - Endpoint terkait fitur terbaru siap:
-    - `GET/POST/PUT/DELETE /api/deposits`
-    - `GET /api/laporan/harian` (mode bulan atau rentang tanggal)
-    - `GET /api/export/harian/excel` dan `GET /api/export/harian/pdf`
-    - `PATCH /api/transactions/{id}/status` menerima `lunas|kredit|free` (aturan: **Free tidak bisa diubah kembali**)
+  - **Alasan Barang Free** sudah ditambahkan:
+    - Field transaksi: `free_alasan` (default **Pemakaian Sendiri** bila status `free`)
+    - Endpoint: `GET /api/transactions/free-reasons`
+    - Laporan harian: `free_per_alasan`
+    - Export harian: sheet/tabel "Barang Free"
+    - Export penjualan: status menjadi teks seperti **"Free (Promo)"**
+  - **Reset Data** sudah dilakukan dan dipastikan **produk contoh tidak muncul lagi** setelah restart.
 - **Frontend**:
-  - UI untuk **Kredit/Free**, **Setoran**, **Laporan Harian**, serta update **Dashboard & Navigasi** sudah **selesai** dan terhubung ke backend.
-  - Halaman baru tersedia:
-    - `/setoran`
-    - `/laporan-harian`
+  - UI untuk **Kredit/Free**, **Setoran**, **Laporan Harian**, Dashboard & Navigasi sudah **selesai**.
+  - UI **Alasan Barang Free** sudah **selesai**:
+    - Dropdown alasan + input manual
+    - Alasan tampil di tabel transaksi
+    - Tabel "Rincian Barang Free" di Laporan Harian
 - **Testing**:
-  - **testing_agent_v3 lulus** (backend 22/22 + semua skenario frontend lulus, 0 bug).
-  - **Data uji otomatis sudah dibersihkan**.
-- **Status fase**: Implementasi Frontend UI fitur terbaru => **COMPLETED**.
+  - Iterasi 4: `testing_agent_v3` lulus (backend 22/22 + semua skenario frontend lulus, 0 bug).
+  - Iterasi 5 (Alasan Barang Free): `testing_agent_v3` lulus (backend 19/19 + semua UI flow lulus).
+- **Status fase**:
+  - Implementasi Frontend UI fitur terbaru => **COMPLETED**.
+  - Implementasi **Alasan Barang Free** + **Reset Data** => **COMPLETED**.
+- **Catatan kondisi sistem setelah reset**:
+  - Koleksi data (transactions, purchase_orders, expenses, deposits, products, customers) = **0**.
+  - Akun login (**users**) tetap ada.
 
 ---
 
 ## 1) Tujuan (Objectives)
-1. **Transaksi**: Mendukung status **Lunas / Kredit / Free** secara end-to-end dan mudah dipahami user.
-2. **Setoran**: Ada halaman pencatatan setoran harian (CRUD), filter tanggal, dan ringkasan.
-3. **Laporan Harian**: Menampilkan rekap harian lengkap (penjualan, pembelian, operasional, laba, setoran) + export Excel/PDF.
-4. **Dashboard & Navigasi**: Menampilkan ringkasan Kredit, Setoran, dan Modal Free; navigasi ke halaman terkait.
-5. **Tahap berikutnya**: Menunggu keputusan user untuk **reset semua data contoh** agar aplikasi mulai dari kondisi bersih.
+1. **Transaksi**: Mendukung status **Lunas / Kredit / Free** + pelacakan **alasan Free**.
+2. **Setoran**: Ada pencatatan setoran harian (CRUD), filter tanggal, ringkasan.
+3. **Laporan Harian**: Rekap harian lengkap + export Excel/PDF, termasuk ringkasan **barang free per alasan**.
+4. **Dashboard & Navigasi**: Menampilkan ringkasan Kredit, Setoran, dan Modal Free.
+5. **Go-Live**: Database sudah **bersih**. User bisa mulai input data real dari nol.
+6. **(DIBATALKAN)** Rekap WhatsApp: tidak dikerjakan karena user membatalkan.
 
 ---
 
@@ -51,7 +60,27 @@
   - Jika mencoba Free → Lunas/Kredit: UI menampilkan error sesuai backend (tidak crash).
 - Filter status transaksi mendukung `all|lunas|kredit|free`.
 
-### 2.2 Setoran (baru)
+### 2.2 Alasan Barang Free (Promo/Sampel/Pemakaian Sendiri/Lainnya + Manual)
+**Status: DONE**
+- Backend:
+  - Field `free_alasan` pada transaksi.
+  - Default bila status `free` dan alasan kosong: **"Pemakaian Sendiri"**.
+  - Bila status bukan `free`, `free_alasan` dikosongkan.
+  - Endpoint `GET /api/transactions/free-reasons`:
+    - Mengembalikan default: `Promo`, `Sampel`, `Pemakaian Sendiri`, `Lainnya`
+    - + alasan manual yang pernah dipakai (agar muncul sebagai pilihan berikutnya).
+  - Laporan harian mengembalikan `free_per_alasan`.
+  - Export harian:
+    - Excel: sheet "Barang Free"
+    - PDF: tabel rincian "Rincian Barang Free"
+  - Export penjualan (Excel/PDF): kolom status menampilkan **"Free (ALASAN)"**.
+- Frontend:
+  - Pada status Free, muncul dropdown **Alasan Barang Free**.
+  - Jika pilih **Lainnya**, muncul input manual.
+  - Alasan tampil di bawah badge status Free pada tabel transaksi.
+  - Laporan Harian menampilkan tabel "Rincian Barang Free".
+
+### 2.3 Setoran (baru)
 **Status: DONE**
 - Page: `/setoran`
 - Fitur:
@@ -65,7 +94,7 @@
   - `PUT /api/deposits/{id}`
   - `DELETE /api/deposits/{id}`
 
-### 2.3 Laporan Harian (baru)
+### 2.4 Laporan Harian (baru)
 **Status: DONE**
 - Page: `/laporan-harian`
 - Default tampilan: **bulan berjalan** (year+month).
@@ -75,24 +104,31 @@
 - Komponen utama:
   - 6 kartu ringkasan: Penjualan, Pembelian Pabrik, Operasional, Laba Bersih, Disetor, Selisih Setoran.
   - Tabel per hari + baris TOTAL.
+  - Tabel tambahan: **Rincian Barang Free** per alasan.
   - Kartu “Cara Hitung” untuk menjelaskan rumus.
 - Export:
-  - Tombol export Excel/PDF terhubung ke:
-    - `GET /api/export/harian/excel`
-    - `GET /api/export/harian/pdf`
+  - `GET /api/export/harian/excel`
+  - `GET /api/export/harian/pdf`
 
-### 2.4 Dashboard Enhancement
+### 2.5 Dashboard Enhancement
 **Status: DONE**
-- Backend `GET /api/dashboard/stats` sudah ditambah:
-  - `setoran_hari_ini`
-  - `setoran_bulan`
-  - `free_hpp_bulan`
-  - `tanggal_hari_ini`
+- Backend `GET /api/dashboard/stats` berisi:
+  - `setoran_hari_ini`, `setoran_bulan`, `free_hpp_bulan`, `tanggal_hari_ini`
 - Dashboard UI menampilkan kartu:
   - Kredit belum tertagih
   - Setoran hari ini
   - Setoran bulan ini
   - Modal barang Free (bulan ini)
+
+### 2.6 Reset Data (Mulai dari Nol)
+**Status: DONE**
+- Script: `/app/backend/scripts/reset_data.py`
+  - Menghapus: `transactions`, `purchase_orders`, `expenses`, `deposits`, `products`, `customers`
+  - Tidak menghapus: `users` (akun login tetap ada)
+- Ditambahkan flag meta `products_seeded` agar produk seed **tidak dibuat ulang** setelah reset dan restart backend.
+- Verifikasi pasca reset:
+  - Semua koleksi terkait = 0
+  - Dashboard & halaman lain menampilkan empty state dengan normal
 
 ---
 
@@ -102,22 +138,30 @@
 - Backend:
   - Status transaksi: **lunas/kredit/free** + aturan Free.
   - CRUD Setoran (`/api/deposits`).
-  - Laporan Harian (`/api/laporan/harian`).
-  - Export Harian Excel/PDF (`/api/export/harian/*`).
-  - Dashboard stats: penambahan `setoran_hari_ini`, `setoran_bulan`, `free_hpp_bulan`, `tanggal_hari_ini`.
+  - Laporan Harian (`/api/laporan/harian`) + `free_per_alasan`.
+  - Export Harian Excel/PDF (`/api/export/harian/*`) + rincian Barang Free.
+  - Export penjualan Excel/PDF: status menampilkan **Free (Alasan)**.
+  - Dashboard stats: `setoran_hari_ini`, `setoran_bulan`, `free_hpp_bulan`, `tanggal_hari_ini`.
+  - Endpoint alasan free: `GET /api/transactions/free-reasons`.
+  - Script reset data: `backend/scripts/reset_data.py`.
+  - Seed produk tidak muncul lagi setelah reset (via meta `products_seeded`).
 - Frontend:
   - Transaksi: status Lunas/Kredit/Free, info Free, total Rp 0 saat Free, customer opsional, ubah status via dropdown badge, filter status.
+  - Input alasan Free: dropdown + input manual jika "Lainnya".
+  - Tabel transaksi: menampilkan alasan di bawah badge Free.
   - Halaman Setoran `/setoran`: CRUD + filter + ringkasan.
-  - Halaman Laporan Harian `/laporan-harian`: mode Per Bulan & Rentang, ringkasan, tabel + TOTAL, export, “Cara Hitung”.
+  - Halaman Laporan Harian `/laporan-harian`: mode Per Bulan & Rentang, ringkasan, tabel + TOTAL, export, “Cara Hitung”, dan tabel "Rincian Barang Free".
   - Navigasi sidebar: menu Setoran & Laporan Harian.
   - Dashboard: kartu setoran/free/kredit.
 - Testing:
-  - `testing_agent_v3` lulus (backend 22/22 + verifikasi UI frontend, tanpa bug).
-  - Data uji otomatis sudah dibersihkan.
+  - Iterasi 4 lulus.
+  - Iterasi 5 (alasan free) lulus.
+- Data:
+  - Reset total sudah dijalankan sesuai permintaan user (termasuk produk & customer).
 
 ### 3.2 Sedang Berjalan (In Progress)
 - Tidak ada pekerjaan teknis yang aktif.
-- Menunggu keputusan user untuk **reset semua data contoh** (opsional, tergantung kebutuhan user).
+- Sistem siap dipakai input data real.
 
 ---
 
@@ -125,7 +169,7 @@
 
 ### Langkah 1 — Backend minor update (Dashboard stats)
 **Status: DONE**
-- Sudah menambahkan `setoran_hari_ini`, `setoran_bulan`, `free_hpp_bulan`, `tanggal_hari_ini` ke `/api/dashboard/stats`.
+- Menambahkan `setoran_hari_ini`, `setoran_bulan`, `free_hpp_bulan`, `tanggal_hari_ini` ke `/api/dashboard/stats`.
 
 ### Langkah 2 — Update Transaksi.jsx (Kredit/Free)
 **Status: DONE**
@@ -135,31 +179,45 @@
 - Ubah status via dropdown badge.
 - Filter status mendukung 4 opsi.
 
-### Langkah 3 — Buat halaman Setoran (Setoran.jsx)
+### Langkah 3 — Implementasi Alasan Barang Free
+**Status: DONE**
+- Backend:
+  - Tambah `free_alasan` di transaksi (create/update/patch status).
+  - Tambah endpoint `GET /api/transactions/free-reasons`.
+  - Tambah agregasi `free_per_alasan` di laporan harian.
+  - Tambah rincian barang free ke export Excel/PDF harian.
+  - Update export penjualan agar status = `Free (alasan)`.
+- Frontend:
+  - Dropdown alasan Free + input manual bila "Lainnya".
+  - Tampilkan alasan pada tabel transaksi.
+  - Tampilkan tabel rincian barang free pada laporan harian.
+
+### Langkah 4 — Buat halaman Setoran (Setoran.jsx)
 **Status: DONE**
 - CRUD setoran + filter + ringkasan.
 
-### Langkah 4 — Buat halaman LaporanHarian (LaporanHarian.jsx)
+### Langkah 5 — Buat halaman LaporanHarian (LaporanHarian.jsx)
 **Status: DONE**
 - Mode bulan & rentang tanggal.
-- Ringkasan 
-- Tabel + TOTAL.
+- Ringkasan, tabel + TOTAL.
 - Export Excel/PDF.
 - Kartu “Cara Hitung”.
+- Tabel rincian barang free per alasan.
 
-### Langkah 5 — Routing, Navigasi, dan Dashboard
+### Langkah 6 — Routing, Navigasi, dan Dashboard
 **Status: DONE**
 - Routes baru di `App.js`: `/setoran`, `/laporan-harian`.
 - Menu baru di `Layout.jsx`: Setoran, Laporan Harian.
 - Kartu dashboard untuk setoran/free/kredit.
 
-### Langkah 6 — Data Hygiene (opsional, menunggu persetujuan user)
-**Status: PENDING (menunggu keputusan user)**
-- Opsi 1: Biarkan data contoh yang sudah ada.
-- Opsi 2: Reset total agar mulai bersih (hapus data contoh):
-  - transaksi, PO pabrik, pengeluaran, setoran (dan data lain jika diinginkan).
-- Jika user setuju:
-  - Buat/ jalankan skrip pembersihan database dengan konfirmasi koleksi mana yang dihapus.
+### Langkah 7 — Reset Data (mulai dari nol)
+**Status: DONE**
+- Jalankan `python backend/scripts/reset_data.py --yes`.
+- Konfirmasi hasil: semua koleksi terkait jadi 0.
+
+### Langkah 8 — (DIBATALKAN) Rekap WhatsApp
+**Status: CANCELED**
+- User menyatakan tidak jadi.
 
 ---
 
@@ -170,11 +228,13 @@
 - Flow Transaksi (Lunas/Kredit/Free) + ubah status.
 - Flow Setoran CRUD.
 - Flow Laporan Harian + export.
+- Flow Alasan Free (dropdown + manual + tampil di laporan dan export).
 - Dashboard & navigasi.
 
 ### 5.2 Otomatis: `testing_agent_v3`
 **Status: DONE**
-- Lulus (backend 22/22 + seluruh skenario UI penting, 0 bug).
+- Iterasi 4: lulus.
+- Iterasi 5 (alasan free): lulus.
 
 ---
 
@@ -185,13 +245,18 @@
 
 ---
 
-## 7) Post-Implementation / Data Hygiene
-- **Menunggu keputusan user**: apakah ingin reset semua data contoh agar penggunaan dimulai dari nol.
-- Jika disetujui, lakukan pembersihan data dengan aman (konfirmasi koleksi yang dihapus).
+## 7) Post-Implementation / Go-Live Checklist
+- **PENTING (setelah reset data)**: sebelum mulai input transaksi, user perlu:
+  1) Tambah **Produk** (beserta varian) dan isi:
+     - **Harga Pabrik** (untuk HPP)
+     - **Harga SO** (harga jual)
+  2) Tambah **Customer**
+  3) Baru input **Transaksi**, **PO Pabrik**, **Pengeluaran**, **Setoran**
 
 ---
 
 ## 8) Risiko & Catatan
 - **Free flow**: status Free tidak bisa dipulihkan menjadi Lunas/Kredit oleh backend; UI sudah menampilkan error dengan jelas.
 - **Konsistensi angka**: seluruh perhitungan rekap/keuangan memakai endpoint backend (tanpa mock data).
-- **Catatan perubahan dashboard**: field `setoran_bulan` digunakan (bukan `setoran_bulan_ini`). Pastikan konsisten jika ada dokumentasi/komunikasi ke user.
+- **Seed produk**: setelah reset, produk seed tidak dibuat ulang (via meta `products_seeded`). Jika suatu saat butuh seed ulang, harus dilakukan manual.
+- **Ekspor**: export harian Excel/PDF kini berisi rincian barang free per alasan; export penjualan menampilkan status "Free (alasan)".
