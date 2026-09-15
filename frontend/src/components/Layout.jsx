@@ -13,6 +13,8 @@ import {
   Factory,
   Wallet,
   PiggyBank,
+  HandCoins,
+  CalendarDays,
 } from "lucide-react";
 
 const nav = [
@@ -20,7 +22,9 @@ const nav = [
   { to: "/transaksi", label: "Transaksi", icon: Receipt, testid: "nav-transaksi" },
   { to: "/po-pabrik", label: "PO Pabrik", icon: Factory, testid: "nav-po-pabrik" },
   { to: "/pengeluaran", label: "Pengeluaran", icon: Wallet, testid: "nav-pengeluaran" },
+  { to: "/setoran", label: "Setoran", icon: HandCoins, testid: "nav-setoran" },
   { to: "/laba", label: "Laba & Keuangan", icon: PiggyBank, testid: "nav-laba" },
+  { to: "/laporan-harian", label: "Laporan Harian", icon: CalendarDays, testid: "nav-laporan-harian" },
   { to: "/rekap-bulanan", label: "Rekap Bulanan", icon: CalendarRange, testid: "nav-rekap" },
   { to: "/produk", label: "Produk", icon: Package, testid: "nav-produk" },
   { to: "/customer", label: "Customer", icon: Users, testid: "nav-customer" },

@@ -130,7 +130,7 @@ export default function POPabrik() {
   };
 
   const save = async () => {
-    if (!pabrik.trim()) return toast.error("Nama pabrik wajib diisi");
+    if (!pabrik.trim()) return toast.error("Pilih pabrik terlebih dahulu");
     const validItems = items.filter(
       (it) => it.product_id && it.variant_label && Number(it.qty) > 0
     );
@@ -247,20 +247,13 @@ export default function POPabrik() {
             <Input type="date" value={tanggal} onChange={(e) => setTanggal(e.target.value)} className="mt-1.5" data-testid="po-tanggal" />
           </div>
           <div>
-            <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Nama Pabrik</Label>
-            <Input
-              list="pabrik-options"
-              value={pabrik}
-              onChange={(e) => setPabrik(e.target.value)}
-              placeholder="mis. Pabrik Cheers Sidoarjo"
-              className="mt-1.5"
-              data-testid="po-pabrik"
-            />
-            <datalist id="pabrik-options">
-              {pabrikList.map((n) => (
-                <option key={n} value={n} />
-              ))}
-            </datalist>
+            <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Pabrik</Label>
+            <Select value={pabrik} onValueChange={setPabrik}>
+              <SelectTrigger className="mt-1.5" data-testid="po-pabrik"><SelectValue placeholder="Pilih pabrik" /></SelectTrigger>
+              <SelectContent>
+                {pabrikList.map((n) => (<SelectItem key={n} value={n}>{n}</SelectItem>))}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">No. PO (opsional)</Label>

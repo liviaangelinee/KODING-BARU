@@ -12,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import logging
 import uuid
 import io
+import calendar
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
@@ -39,7 +40,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 JWT_ALGORITHM = "HS256"
-PRICE_TYPES = ["grosir", "so", "retail"]
+PABRIK_LIST = ["BLUTO", "PANDAAN", "IT"]
 
 # ----------------------- Auth helpers -----------------------
 
@@ -110,9 +111,7 @@ class UpdatePasswordInput(BaseModel):
 class Variant(BaseModel):
     label: str
     harga_pabrik: float = 0   # harga beli dari pabrik (dasar perhitungan HPP/laba)
-    harga_grosir: float = 0
-    harga_so: float = 0
-    harga_retail: float = 0
+    harga_so: float = 0       # satu-satunya harga jual yang dipakai
 
 class ProductInput(BaseModel):
     nama: str
@@ -122,13 +121,11 @@ class CustomerInput(BaseModel):
     nama: str
     telepon: str = ""
     alamat: str = ""
-    default_price_type: Literal["grosir", "so", "retail"] = "retail"
 
 class TransactionItem(BaseModel):
     product_id: str
     product_nama: str
     variant_label: str
-    price_type: str
     harga_satuan: float
     qty: float
     subtotal: float
@@ -139,10 +136,12 @@ class TransactionItem(BaseModel):
 
 class TransactionInput(BaseModel):
     tanggal: str  # YYYY-MM-DD
-    customer_id: str
-    customer_nama: str
+    customer_id: str = ""
+    customer_nama: str = ""
     items: List[TransactionItem]
-    status: Literal["lunas", "belum_lunas"] = "lunas"
+    # lunas = sudah dibayar | kredit = belum dibayar (piutang)
+    # free  = barang gratis / promo / pemakaian sendiri -> omset Rp 0 tapi HPP tetap dihitung
+    status: Literal["lunas", "kredit", "free"] = "lunas"
     catatan: str = ""
 
 # ----------------------- PO Pabrik & Pengeluaran -----------------------
@@ -170,6 +169,12 @@ class ExpenseInput(BaseModel):
     kategori: str
     deskripsi: str = ""
     jumlah: float
+
+class DepositInput(BaseModel):
+    """Setoran uang tunai ke pemilik."""
+    tanggal: str  # YYYY-MM-DD
+    jumlah: float
+    catatan: str = ""
 
 # ----------------------- Auth routes -----------------------
 
@@ -401,13 +406,35 @@ async def list_transactions(date_from: Optional[str] = None, date_to: Optional[s
         t["laba_kotor"] = float(t.get("total") or 0) - hpp
     return items
 
+def normalize_txn(data: TransactionInput):
+    """Aturan khusus status 'free'.
+
+    Barang free (promo, sampel, atau pemakaian sendiri) tidak menghasilkan omset,
+    jadi harga jualnya dipaksa Rp 0. Tetapi HPP-nya tetap dihitung di
+    enrich_items_with_hpp, sehingga modal barang itu tetap mengurangi laba.
+    Customer boleh kosong untuk pemakaian sendiri.
+    """
+    items = data.items
+    if data.status == "free":
+        for i in items:
+            i.harga_satuan = 0
+            i.subtotal = 0
+    nama = (data.customer_nama or "").strip()
+    if not nama:
+        if data.status == "free":
+            nama = "Pemakaian Sendiri"
+        else:
+            raise HTTPException(status_code=422, detail="Customer wajib dipilih")
+    return items, nama
+
 @api_router.post("/transactions")
 async def create_transaction(data: TransactionInput, user: dict = Depends(get_current_user)):
-    total = sum(i.subtotal for i in data.items)
-    enriched = await enrich_items_with_hpp(data.items)
+    items, customer_nama = normalize_txn(data)
+    total = sum(i.subtotal for i in items)
+    enriched = await enrich_items_with_hpp(items)
     total_hpp = sum(i["hpp_subtotal"] for i in enriched)
     doc = {"id": str(uuid.uuid4()), "tanggal": data.tanggal, "customer_id": data.customer_id,
-           "customer_nama": data.customer_nama, "items": enriched,
+           "customer_nama": customer_nama, "items": enriched,
            "total": total, "total_hpp": total_hpp, "laba_kotor": total - total_hpp,
            "status": data.status, "catatan": data.catatan,
            "created_at": datetime.now(timezone.utc).isoformat()}
@@ -417,11 +444,12 @@ async def create_transaction(data: TransactionInput, user: dict = Depends(get_cu
 
 @api_router.put("/transactions/{txn_id}")
 async def update_transaction(txn_id: str, data: TransactionInput, user: dict = Depends(get_current_user)):
-    total = sum(i.subtotal for i in data.items)
-    enriched = await enrich_items_with_hpp(data.items)
+    items, customer_nama = normalize_txn(data)
+    total = sum(i.subtotal for i in items)
+    enriched = await enrich_items_with_hpp(items)
     total_hpp = sum(i["hpp_subtotal"] for i in enriched)
     res = await db.transactions.update_one({"id": txn_id}, {"$set": {
-        "tanggal": data.tanggal, "customer_id": data.customer_id, "customer_nama": data.customer_nama,
+        "tanggal": data.tanggal, "customer_id": data.customer_id, "customer_nama": customer_nama,
         "items": enriched, "total": total, "total_hpp": total_hpp,
         "laba_kotor": total - total_hpp,
         "status": data.status, "catatan": data.catatan}})
@@ -432,9 +460,29 @@ async def update_transaction(txn_id: str, data: TransactionInput, user: dict = D
 @api_router.patch("/transactions/{txn_id}/status")
 async def update_status(txn_id: str, body: dict, user: dict = Depends(get_current_user)):
     status = body.get("status")
-    if status not in ("lunas", "belum_lunas"):
+    if status not in ("lunas", "kredit", "free"):
         raise HTTPException(status_code=400, detail="Status tidak valid")
-    await db.transactions.update_one({"id": txn_id}, {"$set": {"status": status}})
+    txn = await db.transactions.find_one({"id": txn_id})
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan")
+
+    if txn.get("status") == "free" and status != "free":
+        # Harga jual barang free tidak pernah dicatat (selalu 0), jadi tidak bisa
+        # dipulihkan. Lebih aman minta dibuat ulang daripada menyimpan angka salah.
+        raise HTTPException(status_code=400,
+            detail="Transaksi Free tidak bisa diubah jadi Lunas/Kredit. Hapus lalu buat transaksi baru.")
+
+    if status == "free":
+        items = txn.get("items", [])
+        for it in items:
+            it["harga_satuan"] = 0
+            it["subtotal"] = 0
+        total_hpp = sum(float(i.get("hpp_subtotal") or 0) for i in items)
+        await db.transactions.update_one({"id": txn_id}, {"$set": {
+            "status": "free", "items": items, "total": 0,
+            "total_hpp": total_hpp, "laba_kotor": -total_hpp}})
+    else:
+        await db.transactions.update_one({"id": txn_id}, {"$set": {"status": status}})
     return {"message": "Status diperbarui"}
 
 @api_router.delete("/transactions/{txn_id}")
@@ -451,7 +499,7 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     txns = await db.transactions.find({}, {"_id": 0}).to_list(10000)
     total_omset = sum(t["total"] for t in txns)
     total_txn = len(txns)
-    sisa_tagihan = sum(t["total"] for t in txns if t["status"] == "belum_lunas")
+    sisa_tagihan = sum(t["total"] for t in txns if t["status"] == "kredit")
     total_customer = await db.customers.count_documents({})
 
     # omset trend by date (last 30 days that exist)
@@ -475,7 +523,7 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     # outstanding per customer
     outstanding = {}
     for t in txns:
-        if t["status"] == "belum_lunas":
+        if t["status"] == "kredit":
             outstanding[t["customer_nama"]] = outstanding.get(t["customer_nama"], 0) + t["total"]
     outstanding_list = sorted(
         [{"customer": k, "sisa": v} for k, v in outstanding.items()],
@@ -486,7 +534,19 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     prefix = f"{now.year:04d}-{now.month:02d}"
     laba = await compute_laba(prefix)
 
+    # Setoran ke pemilik (hari ini & bulan berjalan)
+    hari_ini = now.strftime("%Y-%m-%d")
+    deps_bulan = await db.deposits.find({"tanggal": {"$regex": f"^{prefix}"}}, {"_id": 0}).to_list(5000)
+    setoran_bulan = sum(float(d.get("jumlah") or 0) for d in deps_bulan)
+    setoran_hari_ini = sum(float(d.get("jumlah") or 0) for d in deps_bulan if d.get("tanggal") == hari_ini)
+
+    # Modal barang free (promo / pemakaian sendiri) bulan berjalan
+    free_hpp_bulan = sum(txn_hpp(t) for t in txns
+                         if t.get("status") == "free" and str(t.get("tanggal", "")).startswith(prefix))
+
     return {"total_omset": total_omset, "total_txn": total_txn, "sisa_tagihan": sisa_tagihan,
+            "setoran_hari_ini": setoran_hari_ini, "setoran_bulan": setoran_bulan,
+            "free_hpp_bulan": free_hpp_bulan, "tanggal_hari_ini": hari_ini,
             "total_customer": total_customer, "trend": trend, "top_products": top_products,
             "outstanding": outstanding_list,
             "bulan_ini": prefix,
@@ -508,7 +568,7 @@ async def rekap_monthly(year: int, month: int, user: dict = Depends(get_current_
     txns = await db.transactions.find({"tanggal": {"$regex": f"^{prefix}"}}, {"_id": 0}).to_list(10000)
     total_omset = sum(t["total"] for t in txns)
     total_txn = len(txns)
-    sisa = sum(t["total"] for t in txns if t["status"] == "belum_lunas")
+    sisa = sum(t["total"] for t in txns if t["status"] == "kredit")
     lunas = total_omset - sisa
 
     prod = {}
@@ -527,7 +587,7 @@ async def rekap_monthly(year: int, month: int, user: dict = Depends(get_current_
             cust[t["customer_nama"]] = {"customer": t["customer_nama"], "omset": 0, "sisa": 0, "txn": 0}
         cust[t["customer_nama"]]["omset"] += t["total"]
         cust[t["customer_nama"]]["txn"] += 1
-        if t["status"] == "belum_lunas":
+        if t["status"] == "kredit":
             cust[t["customer_nama"]]["sisa"] += t["total"]
     per_customer = sorted(cust.values(), key=lambda x: x["omset"], reverse=True)
 
@@ -564,8 +624,13 @@ async def list_purchase_orders(date_from: Optional[str] = None, date_to: Optiona
 
 @api_router.get("/purchase-orders/pabrik-list")
 async def pabrik_list(user: dict = Depends(get_current_user)):
-    names = await db.purchase_orders.distinct("pabrik")
-    return sorted([n for n in names if n])
+    """Daftar pabrik: BLUTO, PANDAAN, IT (plus nama lain yang pernah dipakai)."""
+    saved = await db.purchase_orders.distinct("pabrik")
+    merged = list(PABRIK_LIST)
+    for n in saved:
+        if n and n not in merged:
+            merged.append(n)
+    return merged
 
 @api_router.post("/purchase-orders")
 async def create_purchase_order(data: PurchaseOrderInput, user: dict = Depends(get_current_user)):
@@ -810,12 +875,237 @@ async def laba_report(year: int, month: int, user: dict = Depends(get_current_us
         raise HTTPException(status_code=422, detail="Tahun tidak valid")
     return await compute_laba(f"{year:04d}-{month:02d}")
 
+BULAN_SINGKAT = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+                 "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+async def compute_laba_tahunan(year: int):
+    """Perbandingan laba 12 bulan dalam satu tahun.
+
+    Semua data setahun diambil sekali lalu dikelompokkan per bulan, jadi hanya
+    3 query ke database (bukan 36).
+    """
+    rx = f"^{year:04d}-"
+    txns = await db.transactions.find({"tanggal": {"$regex": rx}}, {"_id": 0}).to_list(50000)
+    exps = await db.expenses.find({"tanggal": {"$regex": rx}}, {"_id": 0}).to_list(50000)
+    pos = await db.purchase_orders.find({"tanggal": {"$regex": rx}}, {"_id": 0}).to_list(50000)
+
+    bulanan = {
+        m: {"bulan": m, "nama_bulan": BULAN_ID[m], "nama_singkat": BULAN_SINGKAT[m],
+            "omset": 0, "hpp": 0, "laba_kotor": 0, "pengeluaran": 0, "laba_bersih": 0,
+            "total_txn": 0, "po_pabrik": 0, "margin_bersih_pct": 0}
+        for m in range(1, 13)
+    }
+
+    def bulan_dari(tanggal):
+        try:
+            return int(str(tanggal)[5:7])
+        except (ValueError, TypeError):
+            return 0
+
+    for t in txns:
+        m = bulan_dari(t.get("tanggal"))
+        if m in bulanan:
+            bulanan[m]["omset"] += float(t.get("total") or 0)
+            bulanan[m]["hpp"] += txn_hpp(t)
+            bulanan[m]["total_txn"] += 1
+    for e in exps:
+        m = bulan_dari(e.get("tanggal"))
+        if m in bulanan:
+            bulanan[m]["pengeluaran"] += float(e.get("jumlah") or 0)
+    for p in pos:
+        m = bulan_dari(p.get("tanggal"))
+        if m in bulanan:
+            bulanan[m]["po_pabrik"] += float(p.get("total") or 0)
+
+    for b in bulanan.values():
+        b["laba_kotor"] = b["omset"] - b["hpp"]
+        b["laba_bersih"] = b["laba_kotor"] - b["pengeluaran"]
+        b["margin_bersih_pct"] = round(b["laba_bersih"] / b["omset"] * 100, 2) if b["omset"] else 0
+
+    per_bulan = [bulanan[m] for m in range(1, 13)]
+    aktif = [b for b in per_bulan if b["omset"] or b["pengeluaran"] or b["po_pabrik"]]
+
+    total_omset = sum(b["omset"] for b in per_bulan)
+    total_hpp = sum(b["hpp"] for b in per_bulan)
+    total_pengeluaran = sum(b["pengeluaran"] for b in per_bulan)
+    total_laba_kotor = total_omset - total_hpp
+    total_laba_bersih = total_laba_kotor - total_pengeluaran
+
+    terbaik = max(aktif, key=lambda x: x["laba_bersih"]) if aktif else None
+    terburuk = min(aktif, key=lambda x: x["laba_bersih"]) if aktif else None
+
+    return {
+        "tahun": year,
+        "per_bulan": per_bulan,
+        "total_omset": total_omset,
+        "total_hpp": total_hpp,
+        "total_laba_kotor": total_laba_kotor,
+        "total_pengeluaran": total_pengeluaran,
+        "total_laba_bersih": total_laba_bersih,
+        "total_po_pabrik": sum(b["po_pabrik"] for b in per_bulan),
+        "total_txn": sum(b["total_txn"] for b in per_bulan),
+        "margin_bersih_pct": round(total_laba_bersih / total_omset * 100, 2) if total_omset else 0,
+        "bulan_aktif": len(aktif),
+        "rata_laba_bersih": round(total_laba_bersih / len(aktif), 2) if aktif else 0,
+        "bulan_terbaik": terbaik,
+        "bulan_terburuk": terburuk,
+    }
+
+@api_router.get("/laba/yearly")
+async def laba_tahunan(year: int, user: dict = Depends(get_current_user)):
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=422, detail="Tahun tidak valid")
+    return await compute_laba_tahunan(year)
+
+# ----------------------- Setoran ke Pemilik -----------------------
+
+@api_router.get("/deposits")
+async def list_deposits(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                        user: dict = Depends(get_current_user)):
+    q = {}
+    if date_from and date_to:
+        q["tanggal"] = {"$gte": date_from, "$lte": date_to}
+    elif date_from:
+        q["tanggal"] = {"$gte": date_from}
+    elif date_to:
+        q["tanggal"] = {"$lte": date_to}
+    return await db.deposits.find(q, {"_id": 0}).sort("tanggal", -1).to_list(5000)
+
+@api_router.post("/deposits")
+async def create_deposit(data: DepositInput, user: dict = Depends(get_current_user)):
+    if float(data.jumlah) <= 0:
+        raise HTTPException(status_code=422, detail="Jumlah setoran harus lebih dari 0")
+    doc = {"id": str(uuid.uuid4()), "tanggal": data.tanggal, "jumlah": float(data.jumlah),
+           "catatan": data.catatan.strip(),
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.deposits.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return doc
+
+@api_router.put("/deposits/{dep_id}")
+async def update_deposit(dep_id: str, data: DepositInput, user: dict = Depends(get_current_user)):
+    if float(data.jumlah) <= 0:
+        raise HTTPException(status_code=422, detail="Jumlah setoran harus lebih dari 0")
+    res = await db.deposits.update_one({"id": dep_id}, {"$set": {
+        "tanggal": data.tanggal, "jumlah": float(data.jumlah), "catatan": data.catatan.strip()}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Setoran tidak ditemukan")
+    return await db.deposits.find_one({"id": dep_id}, {"_id": 0})
+
+@api_router.delete("/deposits/{dep_id}")
+async def delete_deposit(dep_id: str, user: dict = Depends(get_current_user)):
+    res = await db.deposits.delete_one({"id": dep_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Setoran tidak ditemukan")
+    return {"message": "Setoran dihapus"}
+
+# ----------------------- Laporan Harian -----------------------
+
+def _range_query(date_from, date_to):
+    return {"tanggal": {"$gte": date_from, "$lte": date_to}}
+
+async def compute_harian(date_from: str, date_to: str):
+    """Rekap per hari: penjualan, pembelian, operasional, laba bersih, setoran.
+
+    Definisi yang dipakai:
+      penjualan   = total semua transaksi (Lunas + Kredit). Free = Rp 0.
+      kas_masuk   = hanya transaksi Lunas (Kredit belum jadi uang, Free tidak ada uang)
+      pembelian   = total PO ke pabrik pada tanggal tersebut
+      pembayaran_pabrik = PO yang statusnya sudah dibayar (dianggap dibayar pada tanggal PO,
+                    karena PO tidak punya kolom tanggal bayar terpisah)
+      operasional = pengeluaran operasional
+      laba_bersih = (penjualan - HPP) - operasional
+      seharusnya_disetor = kas_masuk - operasional - pembayaran_pabrik
+      selisih     = disetor aktual - seharusnya_disetor
+    """
+    q = _range_query(date_from, date_to)
+    txns = await db.transactions.find(q, {"_id": 0}).to_list(50000)
+    exps = await db.expenses.find(q, {"_id": 0}).to_list(50000)
+    pos = await db.purchase_orders.find(q, {"_id": 0}).to_list(50000)
+    deps = await db.deposits.find(q, {"_id": 0}).to_list(50000)
+
+    def blank(tgl):
+        return {"tanggal": tgl, "penjualan": 0, "kas_masuk": 0, "kredit": 0, "free_hpp": 0,
+                "hpp": 0, "laba_kotor": 0, "pembelian": 0, "pembayaran_pabrik": 0,
+                "operasional": 0, "laba_bersih": 0, "seharusnya_disetor": 0,
+                "disetor": 0, "selisih": 0, "jumlah_txn": 0}
+
+    hari = {}
+    for t in txns:
+        d = hari.setdefault(t["tanggal"], blank(t["tanggal"]))
+        total = float(t.get("total") or 0)
+        hpp = txn_hpp(t)
+        d["penjualan"] += total
+        d["hpp"] += hpp
+        d["jumlah_txn"] += 1
+        if t.get("status") == "lunas":
+            d["kas_masuk"] += total
+        elif t.get("status") == "kredit":
+            d["kredit"] += total
+        elif t.get("status") == "free":
+            d["free_hpp"] += hpp
+    for e in exps:
+        d = hari.setdefault(e["tanggal"], blank(e["tanggal"]))
+        d["operasional"] += float(e.get("jumlah") or 0)
+    for p in pos:
+        d = hari.setdefault(p["tanggal"], blank(p["tanggal"]))
+        tot = float(p.get("total") or 0)
+        d["pembelian"] += tot
+        if p.get("status") == "lunas":
+            d["pembayaran_pabrik"] += tot
+    for s in deps:
+        d = hari.setdefault(s["tanggal"], blank(s["tanggal"]))
+        d["disetor"] += float(s.get("jumlah") or 0)
+
+    for d in hari.values():
+        d["laba_kotor"] = d["penjualan"] - d["hpp"]
+        d["laba_bersih"] = d["laba_kotor"] - d["operasional"]
+        d["seharusnya_disetor"] = d["kas_masuk"] - d["operasional"] - d["pembayaran_pabrik"]
+        d["selisih"] = d["disetor"] - d["seharusnya_disetor"]
+
+    per_hari = [hari[k] for k in sorted(hari.keys())]
+    keys = ["penjualan", "kas_masuk", "kredit", "free_hpp", "hpp", "laba_kotor", "pembelian",
+            "pembayaran_pabrik", "operasional", "laba_bersih", "seharusnya_disetor",
+            "disetor", "selisih", "jumlah_txn"]
+    total = {k: sum(d[k] for d in per_hari) for k in keys}
+    total["hari_aktif"] = len(per_hari)
+
+    return {"date_from": date_from, "date_to": date_to, "per_hari": per_hari, "total": total}
+
+def resolve_range(year, month, date_from, date_to):
+    """Mode bulan (year+month) atau mode rentang tanggal bebas."""
+    if date_from and date_to:
+        if date_from > date_to:
+            raise HTTPException(status_code=422, detail="Tanggal 'Dari' tidak boleh melebihi 'Sampai'")
+        return date_from, date_to
+    if year and month:
+        if month < 1 or month > 12:
+            raise HTTPException(status_code=422, detail="Bulan harus antara 1 dan 12")
+        if year < 2000 or year > 2100:
+            raise HTTPException(status_code=422, detail="Tahun tidak valid")
+        last = calendar.monthrange(year, month)[1]
+        return f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-{last:02d}"
+    raise HTTPException(status_code=422,
+        detail="Pilih bulan (year & month) atau rentang tanggal (date_from & date_to)")
+
+@api_router.get("/laporan/harian")
+async def laporan_harian(year: Optional[int] = None, month: Optional[int] = None,
+                         date_from: Optional[str] = None, date_to: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
+    df, dt = resolve_range(year, month, date_from, date_to)
+    return await compute_harian(df, dt)
+
 # ----------------------- Export -----------------------
 
 def rupiah(n):
     val = int(round(float(n or 0)))
     prefix = "-Rp " if val < 0 else "Rp "
     return prefix + f"{abs(val):,}".replace(",", ".")
+
+TXN_STATUS_LABEL = {"lunas": "Lunas", "kredit": "Kredit", "free": "Free"}
+
+def status_label(s):
+    return TXN_STATUS_LABEL.get(s, s or "-")
 
 async def fetch_txns(date_from, date_to, customer_id, status):
     q = build_txn_query(date_from, date_to, customer_id, status)
@@ -831,20 +1121,26 @@ async def export_excel(date_from: Optional[str] = None, date_to: Optional[str] =
     ws.title = "Rekap Penjualan"
     header_fill = PatternFill(start_color="1D4ED8", end_color="1D4ED8", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True)
-    headers = ["Tanggal", "Customer", "Produk", "Varian", "Tipe Harga", "Harga Satuan", "Qty", "Subtotal", "Status"]
+    headers = ["Tanggal", "Customer", "Produk", "Varian", "Harga SO", "Qty", "Subtotal",
+               "HPP", "Laba", "Status"]
     ws.append(headers)
     for c in ws[1]:
         c.fill = header_fill
         c.font = header_font
     for t in txns:
         for it in t["items"]:
+            sub = float(it.get("subtotal") or 0)
+            hpp = float(it.get("hpp_subtotal") or 0)
             ws.append([t["tanggal"], t["customer_nama"], it["product_nama"], it["variant_label"],
-                       it["price_type"], it["harga_satuan"], it["qty"], it["subtotal"],
-                       "Lunas" if t["status"] == "lunas" else "Belum Lunas"])
+                       it["harga_satuan"], it["qty"], sub, hpp, sub - hpp,
+                       status_label(t["status"])])
     total = sum(t["total"] for t in txns)
+    total_hpp = sum(txn_hpp(t) for t in txns)
     ws.append([])
-    ws.append(["", "", "", "", "", "", "", "TOTAL OMSET", total])
-    for col in "ABCDEFGHI":
+    ws.append(["", "", "", "", "", "", "TOTAL OMSET", total])
+    ws.append(["", "", "", "", "", "", "TOTAL HPP", total_hpp])
+    ws.append(["", "", "", "", "", "", "LABA KOTOR", total - total_hpp])
+    for col in "ABCDEFGHIJ":
         ws.column_dimensions[col].width = 16
     buf = io.BytesIO()
     wb.save(buf)
@@ -867,14 +1163,18 @@ async def export_pdf(date_from: Optional[str] = None, date_to: Optional[str] = N
     subtitle = f"Periode: {date_from or 'Semua'} s/d {date_to or 'Semua'}"
     elems.append(Paragraph(subtitle, styles["Normal"]))
     elems.append(Spacer(1, 10))
-    data = [["Tanggal", "Customer", "Produk", "Varian", "Tipe", "Harga", "Qty", "Subtotal", "Status"]]
+    data = [["Tanggal", "Customer", "Produk", "Varian", "Harga SO", "Qty", "Subtotal", "HPP", "Laba", "Status"]]
     for t in txns:
         for it in t["items"]:
+            sub = float(it.get("subtotal") or 0)
+            hpp = float(it.get("hpp_subtotal") or 0)
             data.append([t["tanggal"], t["customer_nama"], it["product_nama"], it["variant_label"],
-                         it["price_type"], rupiah(it["harga_satuan"]), str(int(it["qty"])),
-                         rupiah(it["subtotal"]), "Lunas" if t["status"] == "lunas" else "Belum Lunas"])
+                         rupiah(it["harga_satuan"]), str(int(float(it["qty"]))),
+                         rupiah(sub), rupiah(hpp), rupiah(sub - hpp),
+                         status_label(t["status"])])
     total = sum(t["total"] for t in txns)
-    data.append(["", "", "", "", "", "", "", "TOTAL", rupiah(total)])
+    total_hpp = sum(txn_hpp(t) for t in txns)
+    data.append(["", "", "", "", "", "", rupiah(total), rupiah(total_hpp), rupiah(total - total_hpp), "TOTAL"])
     tbl = Table(data, repeatRows=1)
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D4ED8")),
@@ -1082,6 +1382,164 @@ async def export_laba_pdf(year: int, month: int, user: dict = Depends(get_curren
     return StreamingResponse(buf, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=laporan_laba_{year}_{month:02d}.pdf"})
 
+@api_router.get("/export/laba/yearly/excel")
+async def export_laba_yearly_excel(year: int, user: dict = Depends(get_current_user)):
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=422, detail="Tahun tidak valid")
+    r = await compute_laba_tahunan(year)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Laba {year}"
+    ws.append(["Bulan", "Omset", "HPP", "Laba Kotor", "Pengeluaran", "Laba Bersih",
+               "Margin Bersih (%)", "Transaksi", "PO Pabrik"])
+    _style_header(ws, 9)
+    for b in r["per_bulan"]:
+        ws.append([b["nama_bulan"], b["omset"], b["hpp"], b["laba_kotor"], b["pengeluaran"],
+                   b["laba_bersih"], b["margin_bersih_pct"], b["total_txn"], b["po_pabrik"]])
+    ws.append([])
+    ws.append(["TOTAL SETAHUN", r["total_omset"], r["total_hpp"], r["total_laba_kotor"],
+               r["total_pengeluaran"], r["total_laba_bersih"], r["margin_bersih_pct"],
+               r["total_txn"], r["total_po_pabrik"]])
+    ws.append([])
+    if r["bulan_terbaik"]:
+        ws.append(["Bulan terbaik", r["bulan_terbaik"]["nama_bulan"], r["bulan_terbaik"]["laba_bersih"]])
+        ws.append(["Bulan terburuk", r["bulan_terburuk"]["nama_bulan"], r["bulan_terburuk"]["laba_bersih"]])
+        ws.append(["Rata-rata laba bersih per bulan aktif", r["rata_laba_bersih"]])
+    return _xlsx_response(wb, f"laporan_tahunan_{year}.xlsx")
+
+@api_router.get("/export/laba/yearly/pdf")
+async def export_laba_yearly_pdf(year: int, user: dict = Depends(get_current_user)):
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=422, detail="Tahun tidak valid")
+    r = await compute_laba_tahunan(year)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=20, bottomMargin=20,
+                            leftMargin=24, rightMargin=24)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("t", parent=styles["Title"], fontSize=16, textColor=colors.HexColor("#0f172a"))
+    h = ParagraphStyle("h", parent=styles["Heading3"], textColor=colors.HexColor("#1D4ED8"))
+    elems = [Paragraph(f"Laporan Laba Tahunan {year}", title_style),
+             Paragraph("CV Citra Pangan Lestari — perbandingan laba antar bulan", styles["Normal"]),
+             Spacer(1, 12)]
+    data = [["Bulan", "Omset", "HPP", "Laba Kotor", "Pengeluaran", "Laba Bersih", "Margin"]]
+    for b in r["per_bulan"]:
+        data.append([b["nama_bulan"], rupiah(b["omset"]), rupiah(b["hpp"]), rupiah(b["laba_kotor"]),
+                     rupiah(b["pengeluaran"]), rupiah(b["laba_bersih"]), f'{b["margin_bersih_pct"]}%'])
+    data.append(["TOTAL", rupiah(r["total_omset"]), rupiah(r["total_hpp"]), rupiah(r["total_laba_kotor"]),
+                 rupiah(r["total_pengeluaran"]), rupiah(r["total_laba_bersih"]),
+                 f'{r["margin_bersih_pct"]}%'])
+    elems.append(_pdf_table(data, col_widths=[80, 105, 105, 105, 105, 105, 60]))
+
+    if r["bulan_terbaik"]:
+        elems.append(Spacer(1, 14))
+        elems.append(Paragraph("Catatan", h))
+        elems.append(_pdf_table([
+            ["Bulan paling untung", f'{r["bulan_terbaik"]["nama_bulan"]} — {rupiah(r["bulan_terbaik"]["laba_bersih"])}'],
+            ["Bulan paling rendah", f'{r["bulan_terburuk"]["nama_bulan"]} — {rupiah(r["bulan_terburuk"]["laba_bersih"])}'],
+            ["Rata-rata laba bersih / bulan aktif", rupiah(r["rata_laba_bersih"])],
+        ], col_widths=[260, 300]))
+
+    doc.build(elems)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=laporan_tahunan_{year}.pdf"})
+
+@api_router.get("/export/harian/excel")
+async def export_harian_excel(year: Optional[int] = None, month: Optional[int] = None,
+                              date_from: Optional[str] = None, date_to: Optional[str] = None,
+                              user: dict = Depends(get_current_user)):
+    df, dt = resolve_range(year, month, date_from, date_to)
+    r = await compute_harian(df, dt)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Laporan Harian"
+    ws.append(["Tanggal", "Penjualan", "Pembelian", "Operasional", "Laba Bersih",
+               "Seharusnya Disetor", "Disetor", "Selisih"])
+    _style_header(ws, 8)
+    for d in r["per_hari"]:
+        ws.append([d["tanggal"], d["penjualan"], d["pembelian"], d["operasional"],
+                   d["laba_bersih"], d["seharusnya_disetor"], d["disetor"], d["selisih"]])
+    t = r["total"]
+    ws.append([])
+    ws.append(["TOTAL", t["penjualan"], t["pembelian"], t["operasional"], t["laba_bersih"],
+               t["seharusnya_disetor"], t["disetor"], t["selisih"]])
+
+    ws2 = wb.create_sheet("Rincian")
+    ws2.append(["Tanggal", "Jml Transaksi", "Penjualan", "Kas Masuk (Lunas)", "Kredit",
+                "HPP", "Laba Kotor", "Modal Barang Free", "Pembelian PO",
+                "Pembayaran ke Pabrik", "Operasional", "Laba Bersih"])
+    _style_header(ws2, 12)
+    for d in r["per_hari"]:
+        ws2.append([d["tanggal"], d["jumlah_txn"], d["penjualan"], d["kas_masuk"], d["kredit"],
+                    d["hpp"], d["laba_kotor"], d["free_hpp"], d["pembelian"],
+                    d["pembayaran_pabrik"], d["operasional"], d["laba_bersih"]])
+    ws2.append([])
+    ws2.append(["TOTAL", t["jumlah_txn"], t["penjualan"], t["kas_masuk"], t["kredit"],
+                t["hpp"], t["laba_kotor"], t["free_hpp"], t["pembelian"],
+                t["pembayaran_pabrik"], t["operasional"], t["laba_bersih"]])
+
+    return _xlsx_response(wb, f"laporan_harian_{df}_sd_{dt}.xlsx")
+
+@api_router.get("/export/harian/pdf")
+async def export_harian_pdf(year: Optional[int] = None, month: Optional[int] = None,
+                            date_from: Optional[str] = None, date_to: Optional[str] = None,
+                            user: dict = Depends(get_current_user)):
+    df, dt = resolve_range(year, month, date_from, date_to)
+    r = await compute_harian(df, dt)
+    t = r["total"]
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=20, bottomMargin=20,
+                            leftMargin=24, rightMargin=24)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("t", parent=styles["Title"], fontSize=16, textColor=colors.HexColor("#0f172a"))
+    h = ParagraphStyle("h", parent=styles["Heading3"], textColor=colors.HexColor("#1D4ED8"))
+    small = ParagraphStyle("s", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#475569"))
+    elems = [Paragraph("Laporan Harian", title_style),
+             Paragraph(f"CV Citra Pangan Lestari — {df} s/d {dt}", styles["Normal"]),
+             Spacer(1, 12)]
+
+    data = [["Tanggal", "Penjualan", "Pembelian", "Operasional", "Laba Bersih",
+             "Seharusnya Disetor", "Disetor", "Selisih"]]
+    for d in r["per_hari"]:
+        data.append([d["tanggal"], rupiah(d["penjualan"]), rupiah(d["pembelian"]),
+                     rupiah(d["operasional"]), rupiah(d["laba_bersih"]),
+                     rupiah(d["seharusnya_disetor"]), rupiah(d["disetor"]), rupiah(d["selisih"])])
+    if len(data) == 1:
+        data.append(["Belum ada data", "-", "-", "-", "-", "-", "-", "-"])
+    data.append(["TOTAL", rupiah(t["penjualan"]), rupiah(t["pembelian"]), rupiah(t["operasional"]),
+                 rupiah(t["laba_bersih"]), rupiah(t["seharusnya_disetor"]),
+                 rupiah(t["disetor"]), rupiah(t["selisih"])])
+    elems.append(_pdf_table(data, col_widths=[70, 95, 95, 90, 95, 105, 95, 95]))
+
+    elems.append(Spacer(1, 14))
+    elems.append(Paragraph("Ringkasan Periode", h))
+    elems.append(_pdf_table([
+        ["Total Penjualan (Lunas + Kredit)", rupiah(t["penjualan"])],
+        ["Kas Masuk (hanya Lunas)", rupiah(t["kas_masuk"])],
+        ["Penjualan Kredit (belum dibayar)", rupiah(t["kredit"])],
+        ["Modal Barang Free / Pemakaian Sendiri", rupiah(t["free_hpp"])],
+        ["HPP", rupiah(t["hpp"])],
+        ["Laba Kotor", rupiah(t["laba_kotor"])],
+        ["Pengeluaran Operasional", rupiah(t["operasional"])],
+        ["LABA BERSIH", rupiah(t["laba_bersih"])],
+        ["Pembelian ke Pabrik", rupiah(t["pembelian"])],
+        ["Pembayaran ke Pabrik", rupiah(t["pembayaran_pabrik"])],
+        ["Seharusnya Disetor", rupiah(t["seharusnya_disetor"])],
+        ["Sudah Disetor", rupiah(t["disetor"])],
+        ["SELISIH", rupiah(t["selisih"])],
+    ], col_widths=[300, 260]))
+
+    elems.append(Spacer(1, 10))
+    elems.append(Paragraph(
+        "Catatan: Seharusnya Disetor = Kas Masuk (penjualan Lunas) − Operasional − Pembayaran ke Pabrik. "
+        "Penjualan Kredit belum dihitung sebagai kas masuk. Barang Free tidak menghasilkan omset, "
+        "tetapi modal pabriknya tetap dihitung sebagai biaya.", small))
+
+    doc.build(elems)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=laporan_harian_{df}_sd_{dt}.pdf"})
+
 # ----------------------- Seed -----------------------
 
 SEED_PRODUCTS = [
@@ -1141,6 +1599,26 @@ async def migrate_transaction_hpp():
     if updated:
         logger.info(f"Migrasi HPP transaksi: {updated} transaksi diperbarui")
 
+async def migrate_single_price():
+    """Sederhanakan ke satu harga jual (Harga SO).
+
+    Menghapus harga_grosir & harga_retail dari varian produk, default_price_type
+    dari customer, dan price_type dari item transaksi. Harga SO dipertahankan.
+    """
+    prod = await db.products.update_many(
+        {}, {"$unset": {"variants.$[].harga_grosir": "", "variants.$[].harga_retail": ""}})
+    cust = await db.customers.update_many({}, {"$unset": {"default_price_type": ""}})
+    txn = await db.transactions.update_many({}, {"$unset": {"items.$[].price_type": ""}})
+    if prod.modified_count or cust.modified_count or txn.modified_count:
+        logger.info(f"Migrasi harga tunggal: {prod.modified_count} produk, "
+                    f"{cust.modified_count} customer, {txn.modified_count} transaksi")
+
+async def migrate_status_kredit():
+    """Ganti status transaksi 'belum_lunas' menjadi 'kredit' (istilah baru)."""
+    res = await db.transactions.update_many({"status": "belum_lunas"}, {"$set": {"status": "kredit"}})
+    if res.modified_count:
+        logger.info(f"Migrasi status transaksi ke 'kredit': {res.modified_count} transaksi")
+
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)
@@ -1149,6 +1627,7 @@ async def startup():
     await db.purchase_orders.create_index("status")
     await db.expenses.create_index("tanggal")
     await db.expenses.create_index("kategori")
+    await db.deposits.create_index("tanggal")
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     # Seed admin only when no user exists yet. Do NOT overwrite an existing
@@ -1164,14 +1643,15 @@ async def startup():
             variants = []
             for lb in labels:
                 g, s, r = DEFAULT_PRICES.get(lb, (0, 0, 0))
-                variants.append({"label": lb, "harga_pabrik": 0, "harga_grosir": g,
-                                 "harga_so": s, "harga_retail": r})
+                variants.append({"label": lb, "harga_pabrik": 0, "harga_so": s})
             await db.products.insert_one({"id": str(uuid.uuid4()), "nama": nama, "variants": variants,
                                           "created_at": datetime.now(timezone.utc).isoformat()})
         logger.info("Produk awal dibuat")
 
     await migrate_harga_pabrik()
     await migrate_transaction_hpp()
+    await migrate_single_price()
+    await migrate_status_kredit()
 
 app.include_router(api_router)
 

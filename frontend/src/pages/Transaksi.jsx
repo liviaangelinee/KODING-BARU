@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, rupiah, PRICE_LABEL } from "@/lib/api";
+import { api, rupiah } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,13 +22,35 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Trash2, FileSpreadsheet, FileText, Filter, X } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Plus, Trash2, FileSpreadsheet, FileText, Filter, X, Gift } from "lucide-react";
 import { toast } from "sonner";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+const STATUS_LABEL = { lunas: "Lunas", kredit: "Kredit", free: "Free" };
+const STATUS_BADGE = {
+  lunas: "bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-emerald-200",
+  kredit: "bg-amber-100 text-amber-800 hover:bg-amber-200 border-amber-200",
+  free: "bg-violet-100 text-violet-700 hover:bg-violet-200 border-violet-200",
+};
+
+function StatusBadge({ status, className = "" }) {
+  const s = status === "belum_lunas" ? "kredit" : status || "lunas";
+  return (
+    <Badge className={`${STATUS_BADGE[s] || STATUS_BADGE.lunas} ${className}`}>
+      {STATUS_LABEL[s] || s}
+    </Badge>
+  );
+}
+
 function emptyItem() {
-  return { product_id: "", product_nama: "", variant_label: "", price_type: "retail", harga_satuan: 0, qty: 1 };
+  return { product_id: "", product_nama: "", variant_label: "", harga_satuan: 0, qty: 1 };
 }
 
 export default function Transaksi() {
@@ -63,42 +85,27 @@ export default function Transaksi() {
     // eslint-disable-next-line
   }, [filter]);
 
-  const onSelectCustomer = (id) => {
-    setCustomerId(id);
-    const c = customers.find((x) => x.id === id);
-    if (c) {
-      setItems((prev) => prev.map((it) => (it.product_id ? recalcPrice(it, c.default_price_type) : { ...it, price_type: c.default_price_type })));
-    }
-  };
-
-  const recalcPrice = (item, priceType) => {
-    const p = products.find((x) => x.id === item.product_id);
-    const v = p?.variants.find((vv) => vv.label === item.variant_label);
-    const harga = v ? v[`harga_${priceType}`] : item.harga_satuan;
-    return { ...item, price_type: priceType, harga_satuan: harga };
-  };
-
   const setItem = (i, patch) => setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
 
   const onProduct = (i, pid) => {
     const p = products.find((x) => x.id === pid);
     setItem(i, { product_id: pid, product_nama: p?.nama || "", variant_label: "", harga_satuan: 0 });
   };
+
   const onVariant = (i, label) => {
     const it = items[i];
     const p = products.find((x) => x.id === it.product_id);
     const v = p?.variants.find((vv) => vv.label === label);
-    const harga = v ? v[`harga_${it.price_type}`] : 0;
-    setItem(i, { variant_label: label, harga_satuan: harga });
-  };
-  const onPriceType = (i, pt) => {
-    const it = items[i];
-    setItem(i, recalcPrice({ ...it }, pt));
+    // Harga SO dipakai sebagai harga jual, tetap bisa diubah manual bila perlu.
+    setItem(i, { variant_label: label, harga_satuan: v?.harga_so || 0 });
   };
 
   const total = useMemo(
-    () => items.reduce((s, it) => s + Number(it.harga_satuan || 0) * Number(it.qty || 0), 0),
-    [items]
+    () =>
+      status === "free"
+        ? 0
+        : items.reduce((s, it) => s + Number(it.harga_satuan || 0) * Number(it.qty || 0), 0),
+    [items, status]
   );
 
   const resetForm = () => {
@@ -110,21 +117,21 @@ export default function Transaksi() {
   };
 
   const save = async () => {
+    const isFree = status === "free";
     const c = customers.find((x) => x.id === customerId);
-    if (!c) return toast.error("Pilih customer terlebih dahulu");
+    if (!c && !isFree) return toast.error("Pilih customer terlebih dahulu");
     const validItems = items.filter((it) => it.product_id && it.variant_label && Number(it.qty) > 0);
     if (!validItems.length) return toast.error("Tambahkan minimal satu item produk");
     const payload = {
       tanggal,
       customer_id: customerId,
-      customer_nama: c.nama,
+      customer_nama: c ? c.nama : "Pemakaian Sendiri",
       status,
       catatan,
       items: validItems.map((it) => ({
         product_id: it.product_id,
         product_nama: it.product_nama,
         variant_label: it.variant_label,
-        price_type: it.price_type,
         harga_satuan: Number(it.harga_satuan),
         qty: Number(it.qty),
         subtotal: Number(it.harga_satuan) * Number(it.qty),
@@ -136,14 +143,19 @@ export default function Transaksi() {
       resetForm();
       loadTxns();
     } catch (e) {
-      toast.error("Gagal menyimpan transaksi");
+      toast.error(e?.response?.data?.detail || "Gagal menyimpan transaksi");
     }
   };
 
-  const toggleStatus = async (t) => {
-    const next = t.status === "lunas" ? "belum_lunas" : "lunas";
-    await api.patch(`/transactions/${t.id}/status`, { status: next });
-    loadTxns();
+  const changeStatus = async (t, next) => {
+    if (t.status === next) return;
+    try {
+      await api.patch(`/transactions/${t.id}/status`, { status: next });
+      toast.success(`Status diubah menjadi ${STATUS_LABEL[next]}`);
+      loadTxns();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Gagal mengubah status");
+    }
   };
 
   const doDelete = async () => {
@@ -189,7 +201,6 @@ export default function Transaksi() {
 
   const totalOmset = txns.reduce((s, t) => s + t.total, 0);
   const totalLaba = txns.reduce((s, t) => s + Number(t.laba_kotor || 0), 0);
-  const selectedCustomer = customers.find((x) => x.id === customerId);
 
   return (
     <div className="space-y-6" data-testid="transaksi-page">
@@ -207,12 +218,14 @@ export default function Transaksi() {
             <Input type="date" value={tanggal} onChange={(e) => setTanggal(e.target.value)} className="mt-1.5" data-testid="txn-tanggal" />
           </div>
           <div>
-            <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer</Label>
-            <Select value={customerId} onValueChange={onSelectCustomer}>
+            <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Customer {status === "free" && <span className="normal-case font-normal text-slate-400">(opsional)</span>}
+            </Label>
+            <Select value={customerId} onValueChange={setCustomerId}>
               <SelectTrigger className="mt-1.5" data-testid="txn-customer"><SelectValue placeholder="Pilih customer" /></SelectTrigger>
               <SelectContent>
                 {customers.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>{c.nama} ({PRICE_LABEL[c.default_price_type]})</SelectItem>
+                  <SelectItem key={c.id} value={c.id}>{c.nama}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -222,28 +235,42 @@ export default function Transaksi() {
             <Select value={status} onValueChange={setStatus}>
               <SelectTrigger className="mt-1.5" data-testid="txn-status"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="lunas">Lunas</SelectItem>
-                <SelectItem value="belum_lunas">Belum Lunas</SelectItem>
+                <SelectItem value="lunas">Lunas (sudah dibayar)</SelectItem>
+                <SelectItem value="kredit">Kredit (belum dibayar)</SelectItem>
+                <SelectItem value="free">Free (gratis / promo)</SelectItem>
               </SelectContent>
             </Select>
           </div>
         </div>
 
+        {status === "free" && (
+          <div
+            className="flex items-start gap-2 rounded-md border border-violet-200 bg-violet-50 px-3 py-2.5 mb-4 text-sm text-violet-800"
+            data-testid="free-info"
+          >
+            <Gift className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>
+              Transaksi <b>Free</b>: omset dicatat <b>Rp 0</b>, tetapi modal/HPP dari pabrik tetap dihitung
+              sehingga mengurangi laba. Customer boleh dikosongkan (akan tercatat sebagai
+              &quot;Pemakaian Sendiri&quot;).
+            </span>
+          </div>
+        )}
+
         {/* items */}
         <div className="space-y-2">
           <div className="hidden md:grid grid-cols-12 gap-2 text-xs uppercase text-slate-400 px-1">
-            <div className="col-span-3">Produk</div>
+            <div className="col-span-4">Produk</div>
             <div className="col-span-2">Varian</div>
-            <div className="col-span-2">Tipe Harga</div>
-            <div className="col-span-2">Harga Satuan</div>
+            <div className="col-span-2">Harga SO</div>
             <div className="col-span-1">Qty</div>
-            <div className="col-span-2">Subtotal</div>
+            <div className="col-span-3">Subtotal</div>
           </div>
           {items.map((it, i) => {
             const p = products.find((x) => x.id === it.product_id);
             return (
               <div key={i} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center border-b border-slate-100 pb-2 md:border-0 md:pb-0">
-                <div className="md:col-span-3">
+                <div className="md:col-span-4">
                   <Select value={it.product_id} onValueChange={(v) => onProduct(i, v)}>
                     <SelectTrigger data-testid={`item-product-${i}`}><SelectValue placeholder="Produk" /></SelectTrigger>
                     <SelectContent>
@@ -260,24 +287,14 @@ export default function Transaksi() {
                   </Select>
                 </div>
                 <div className="md:col-span-2">
-                  <Select value={it.price_type} onValueChange={(v) => onPriceType(i, v)}>
-                    <SelectTrigger data-testid={`item-pricetype-${i}`}><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="grosir">Grosir</SelectItem>
-                      <SelectItem value="so">SO</SelectItem>
-                      <SelectItem value="retail">Retail</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="md:col-span-2">
                   <Input type="number" value={it.harga_satuan} onChange={(e) => setItem(i, { harga_satuan: e.target.value })} data-testid={`item-harga-${i}`} />
                 </div>
                 <div className="md:col-span-1">
                   <Input type="number" value={it.qty} onChange={(e) => setItem(i, { qty: e.target.value })} data-testid={`item-qty-${i}`} />
                 </div>
-                <div className="md:col-span-2 flex items-center gap-2">
+                <div className="md:col-span-3 flex items-center gap-2">
                   <span className="text-sm font-semibold tabular text-slate-700 flex-1">{rupiah(Number(it.harga_satuan || 0) * Number(it.qty || 0))}</span>
-                  <Button size="icon" variant="ghost" onClick={() => setItems((p) => p.filter((_, idx) => idx !== i))} disabled={items.length === 1}>
+                  <Button size="icon" variant="ghost" onClick={() => setItems((p2) => p2.filter((_, idx) => idx !== i))} disabled={items.length === 1}>
                     <Trash2 className="h-4 w-4 text-red-500" />
                   </Button>
                 </div>
@@ -287,7 +304,7 @@ export default function Transaksi() {
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-4 mt-4">
-          <Button variant="outline" size="sm" onClick={() => setItems((p) => [...p, { ...emptyItem(), price_type: selectedCustomer?.default_price_type || "retail" }])} data-testid="add-item-btn">
+          <Button variant="outline" size="sm" onClick={() => setItems((p) => [...p, emptyItem()])} data-testid="add-item-btn">
             <Plus className="h-4 w-4 mr-1" /> Tambah Item
           </Button>
           <div className="flex items-center gap-6">
@@ -334,7 +351,8 @@ export default function Transaksi() {
               <SelectContent>
                 <SelectItem value="all">Semua Status</SelectItem>
                 <SelectItem value="lunas">Lunas</SelectItem>
-                <SelectItem value="belum_lunas">Belum Lunas</SelectItem>
+                <SelectItem value="kredit">Kredit</SelectItem>
+                <SelectItem value="free">Free</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -369,7 +387,7 @@ export default function Transaksi() {
 
       {/* Recap table */}
       <Card className="border-slate-200 shadow-none rounded-lg overflow-hidden" data-testid="rekap-table">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-slate-200">
           <h3 className="font-heading font-semibold text-slate-800">Tabel Rekap</h3>
           <div className="flex items-center gap-5 text-sm text-slate-500">
             <span>Total Omset: <span className="font-bold text-slate-900 tabular">{rupiah(totalOmset)}</span></span>
@@ -408,13 +426,22 @@ export default function Transaksi() {
                     {rupiah(t.laba_kotor || 0)}
                   </td>
                   <td className="py-2.5 px-3 text-center">
-                    <button onClick={() => toggleStatus(t)} data-testid={`status-toggle-${t.id}`}>
-                      {t.status === "lunas" ? (
-                        <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-emerald-200 cursor-pointer">Lunas</Badge>
-                      ) : (
-                        <Badge className="bg-red-100 text-red-700 hover:bg-red-200 border-red-200 cursor-pointer">Belum Lunas</Badge>
-                      )}
-                    </button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger data-testid={`status-toggle-${t.id}`} className="outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-md">
+                        <StatusBadge status={t.status} className="cursor-pointer" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {["lunas", "kredit", "free"].map((s) => (
+                          <DropdownMenuItem
+                            key={s}
+                            onClick={() => changeStatus(t, s)}
+                            data-testid={`set-status-${s}-${t.id}`}
+                          >
+                            {STATUS_LABEL[s]}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </td>
                   <td className="py-2.5 px-3 text-center">
                     <Button size="icon" variant="ghost" onClick={() => setDeleteId(t.id)} data-testid={`delete-txn-${t.id}`}>

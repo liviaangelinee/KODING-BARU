@@ -9,6 +9,8 @@ import Transaksi from "@/pages/Transaksi";
 import POPabrik from "@/pages/POPabrik";
 import Pengeluaran from "@/pages/Pengeluaran";
 import Laba from "@/pages/Laba";
+import Setoran from "@/pages/Setoran";
+import LaporanHarian from "@/pages/LaporanHarian";
 import RekapBulanan from "@/pages/RekapBulanan";
 import Produk from "@/pages/Produk";
 import Customer from "@/pages/Customer";
@@ -43,7 +45,9 @@ function AppRoutes() {
         <Route path="transaksi" element={<Transaksi />} />
         <Route path="po-pabrik" element={<POPabrik />} />
         <Route path="pengeluaran" element={<Pengeluaran />} />
+        <Route path="setoran" element={<Setoran />} />
         <Route path="laba" element={<Laba />} />
+        <Route path="laporan-harian" element={<LaporanHarian />} />
         <Route path="rekap-bulanan" element={<RekapBulanan />} />
         <Route path="produk" element={<Produk />} />
         <Route path="customer" element={<Customer />} />

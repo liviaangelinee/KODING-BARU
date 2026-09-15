@@ -24,7 +24,7 @@ import {
 import { Plus, Pencil, Trash2, Package } from "lucide-react";
 import { toast } from "sonner";
 
-const emptyVariant = () => ({ label: "", harga_pabrik: 0, harga_grosir: 0, harga_so: 0, harga_retail: 0 });
+const emptyVariant = () => ({ label: "", harga_pabrik: 0, harga_so: 0 });
 
 export default function Produk() {
   const [products, setProducts] = useState([]);
@@ -63,9 +63,7 @@ export default function Produk() {
       .map((v) => ({
         label: v.label.trim(),
         harga_pabrik: Number(v.harga_pabrik) || 0,
-        harga_grosir: Number(v.harga_grosir) || 0,
         harga_so: Number(v.harga_so) || 0,
-        harga_retail: Number(v.harga_retail) || 0,
       }));
     if (!clean.length) return toast.error("Minimal satu varian");
     const payload = { nama: nama.trim(), variants: clean };
@@ -92,7 +90,7 @@ export default function Produk() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-heading text-3xl font-semibold tracking-tight text-slate-900">Manajemen Produk</h1>
-          <p className="text-sm text-slate-500 mt-1">Atur produk, varian, dan harga (Grosir / SO / Retail).</p>
+          <p className="text-sm text-slate-500 mt-1">Atur produk, varian, harga pabrik, dan harga SO.</p>
         </div>
         <Button onClick={openNew} data-testid="add-product-btn" className="bg-blue-600 hover:bg-blue-700">
           <Plus className="h-4 w-4 mr-2" /> Tambah Produk
@@ -123,24 +121,29 @@ export default function Produk() {
                 <thead>
                   <tr className="text-xs uppercase tracking-wide text-slate-500 border-b border-slate-200">
                     <th className="text-left py-1.5">Varian</th>
-                    <th className="text-right py-1.5">Pabrik</th>
-                    <th className="text-right py-1.5">Grosir</th>
-                    <th className="text-right py-1.5">SO</th>
-                    <th className="text-right py-1.5">Retail</th>
+                    <th className="text-right py-1.5">Harga Pabrik</th>
+                    <th className="text-right py-1.5">Harga SO</th>
+                    <th className="text-right py-1.5">Laba / Unit</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {p.variants.map((v) => (
-                    <tr key={v.label} className="border-b border-slate-100">
-                      <td className="py-1.5 font-medium text-slate-700">{v.label}</td>
-                      <td className={`py-1.5 text-right tabular ${Number(v.harga_pabrik) > 0 ? "text-amber-600 font-medium" : "text-red-400"}`}>
-                        {Number(v.harga_pabrik) > 0 ? rupiah(v.harga_pabrik) : "belum diisi"}
-                      </td>
-                      <td className="py-1.5 text-right tabular text-slate-600">{rupiah(v.harga_grosir)}</td>
-                      <td className="py-1.5 text-right tabular text-slate-600">{rupiah(v.harga_so)}</td>
-                      <td className="py-1.5 text-right tabular text-slate-600">{rupiah(v.harga_retail)}</td>
-                    </tr>
-                  ))}
+                  {p.variants.map((v) => {
+                    const pabrik = Number(v.harga_pabrik) || 0;
+                    const so = Number(v.harga_so) || 0;
+                    const laba = so - pabrik;
+                    return (
+                      <tr key={v.label} className="border-b border-slate-100">
+                        <td className="py-1.5 font-medium text-slate-700">{v.label}</td>
+                        <td className={`py-1.5 text-right tabular ${pabrik > 0 ? "text-amber-600 font-medium" : "text-red-400"}`}>
+                          {pabrik > 0 ? rupiah(pabrik) : "belum diisi"}
+                        </td>
+                        <td className="py-1.5 text-right tabular text-slate-700 font-medium">{rupiah(so)}</td>
+                        <td className={`py-1.5 text-right tabular font-semibold ${pabrik <= 0 ? "text-slate-300" : laba >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                          {pabrik > 0 ? rupiah(laba) : "-"}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -166,24 +169,21 @@ export default function Produk() {
                 </Button>
               </div>
               <p className="text-xs text-slate-500 mb-2">
-                <span className="font-semibold text-amber-600">Harga Pabrik</span> adalah harga beli dari pabrik.
-                Dipakai sebagai HPP untuk menghitung laba, dan jadi harga default saat input PO Pabrik.
+                <span className="font-semibold text-amber-600">Harga Pabrik</span> = harga beli dari pabrik (jadi HPP
+                untuk hitung laba, dan harga default saat input PO).{" "}
+                <span className="font-semibold text-slate-700">Harga SO</span> = harga jual ke customer.
               </p>
               <div className="space-y-2">
                 <div className="grid grid-cols-12 gap-2 text-xs uppercase text-slate-400 px-1">
-                  <div className="col-span-2">Label</div>
-                  <div className="col-span-2 text-amber-600">Pabrik</div>
-                  <div className="col-span-2">Grosir</div>
-                  <div className="col-span-2">SO</div>
-                  <div className="col-span-3">Retail</div>
+                  <div className="col-span-4">Label Varian</div>
+                  <div className="col-span-3 text-amber-600">Harga Pabrik</div>
+                  <div className="col-span-4">Harga SO</div>
                 </div>
                 {variants.map((v, i) => (
                   <div key={i} className="grid grid-cols-12 gap-2 items-center">
-                    <Input className="col-span-2" value={v.label} onChange={(e) => setV(i, "label", e.target.value)} placeholder="1200" data-testid={`variant-label-${i}`} />
-                    <Input className="col-span-2 border-amber-200 focus-visible:ring-amber-400" type="number" value={v.harga_pabrik} onChange={(e) => setV(i, "harga_pabrik", e.target.value)} data-testid={`variant-pabrik-${i}`} />
-                    <Input className="col-span-2" type="number" value={v.harga_grosir} onChange={(e) => setV(i, "harga_grosir", e.target.value)} data-testid={`variant-grosir-${i}`} />
-                    <Input className="col-span-2" type="number" value={v.harga_so} onChange={(e) => setV(i, "harga_so", e.target.value)} data-testid={`variant-so-${i}`} />
-                    <Input className="col-span-3" type="number" value={v.harga_retail} onChange={(e) => setV(i, "harga_retail", e.target.value)} data-testid={`variant-retail-${i}`} />
+                    <Input className="col-span-4" value={v.label} onChange={(e) => setV(i, "label", e.target.value)} placeholder="1200" data-testid={`variant-label-${i}`} />
+                    <Input className="col-span-3 border-amber-200 focus-visible:ring-amber-400" type="number" value={v.harga_pabrik} onChange={(e) => setV(i, "harga_pabrik", e.target.value)} data-testid={`variant-pabrik-${i}`} />
+                    <Input className="col-span-4" type="number" value={v.harga_so} onChange={(e) => setV(i, "harga_so", e.target.value)} data-testid={`variant-so-${i}`} />
                     <Button size="icon" variant="ghost" className="col-span-1" onClick={() => setVariants((p) => p.filter((_, idx) => idx !== i))}>
                       <Trash2 className="h-4 w-4 text-red-500" />
                     </Button>

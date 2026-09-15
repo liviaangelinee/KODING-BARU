@@ -10,6 +10,8 @@ import {
   Factory,
   PiggyBank,
   Package,
+  HandCoins,
+  Gift,
 } from "lucide-react";
 import {
   AreaChart,
@@ -73,8 +75,34 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={Wallet} label="Total Omset" value={rupiah(stats.total_omset)} tone="blue" testid="stat-omset" />
         <StatCard icon={Receipt} label="Total Transaksi" value={stats.total_txn} testid="stat-txn" />
-        <StatCard icon={AlertTriangle} label="Sisa Tagihan" value={rupiah(stats.sisa_tagihan)} tone="danger" testid="stat-sisa" />
+        <StatCard icon={AlertTriangle} label="Kredit Belum Tertagih" value={rupiah(stats.sisa_tagihan)} tone="danger" testid="stat-sisa" />
         <StatCard icon={Users} label="Total Customer" value={stats.total_customer} tone="success" testid="stat-customer" />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatCard
+          icon={HandCoins}
+          label="Setoran Hari Ini"
+          value={rupiah(stats.setoran_hari_ini || 0)}
+          tone="blue"
+          sub={stats.tanggal_hari_ini}
+          testid="stat-setoran-hari-ini"
+        />
+        <StatCard
+          icon={HandCoins}
+          label="Setoran Bulan Ini"
+          value={rupiah(stats.setoran_bulan || 0)}
+          tone="success"
+          testid="stat-setoran-bulan"
+        />
+        <StatCard
+          icon={Gift}
+          label="Modal Barang Free"
+          value={rupiah(stats.free_hpp_bulan || 0)}
+          tone="amber"
+          sub="Promo / pemakaian sendiri bulan ini"
+          testid="stat-free-hpp"
+        />
       </div>
 
       {/* Ringkasan keuangan bulan berjalan */}
@@ -132,7 +160,7 @@ export default function Dashboard() {
         <Card className="p-5 border-slate-200 shadow-none rounded-lg" data-testid="outstanding-card">
           <div className="flex items-center gap-2 mb-4">
             <AlertTriangle className="h-4 w-4 text-red-600" />
-            <h3 className="font-heading font-semibold text-slate-800">Sisa Tagihan per Customer</h3>
+            <h3 className="font-heading font-semibold text-slate-800">Kredit per Customer</h3>
           </div>
           {stats.outstanding.length === 0 ? (
             <p className="text-sm text-slate-400 py-12 text-center">Tidak ada tagihan tertunggak. 🎉</p>
