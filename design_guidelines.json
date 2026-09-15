@@ -1,0 +1,81 @@
+{
+  "project_type": "Data-Heavy Admin Dashboard / Business SaaS",
+  "theme": "Light mode by default (optimal for dense data tables and inputs).",
+  "archetype": "ARCHETYPE 4: SWISS & HIGH-CONTRAST (Authority, Clarity, Truth)",
+  "typography": {
+    "font_family": {
+      "headings": "Work Sans (with tight tracking)",
+      "body": "IBM Plex Sans (for excellent tabular figure rendering and readability)"
+    },
+    "hierarchy": {
+      "h1": "text-4xl tracking-tight font-semibold text-slate-900",
+      "h2": "text-2xl tracking-tight font-semibold text-slate-800",
+      "h3": "text-lg font-medium text-slate-800",
+      "body": "text-sm text-slate-600 leading-relaxed",
+      "labels_overlines": "text-xs font-semibold uppercase tracking-[0.1em] text-slate-500"
+    }
+  },
+  "colors": {
+    "background": {
+      "page": "bg-[#F8F9FA] (Off-white/Light Gray)",
+      "card": "bg-white",
+      "header": "bg-white/80 backdrop-blur-xl border-b border-slate-200"
+    },
+    "text": {
+      "primary": "text-slate-900",
+      "secondary": "text-slate-600",
+      "muted": "text-slate-400"
+    },
+    "accents": {
+      "primary": "bg-blue-600 hover:bg-blue-700 text-white (For primary actions, e.g., Simpan Transaksi)",
+      "warning": "bg-amber-100 text-amber-800 (For pending/partial states)",
+      "danger": "bg-red-50 text-red-700 border border-red-200 (For 'Belum Lunas' / Outstanding Debts)",
+      "success": "bg-emerald-50 text-emerald-700 border border-emerald-200 (For 'Lunas')"
+    },
+    "borders": "border-slate-200/80"
+  },
+  "layouts": {
+    "spacing": "Generous container padding (p-6 or p-8). Tight gap (gap-4 or gap-6) for high-density grids.",
+    "dashboard_grid": "Bento Protocol (Mode B). Use grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Summary cards span 1 col, Charts span 2-3 cols.",
+    "cards": "Cardless or flat cards with sharp 1px borders (border-slate-200). Max 8px border-radius (rounded-lg). DO NOT use blurry drop shadows. If shadow is needed, use shadow-sm.",
+    "tables": "Full-width, crisp cell borders, dense padding (py-2 px-3) to fit maximum data. Sticky headers."
+  },
+  "components_instructions": {
+    "ui_library": "Use Shadcn UI primitives but heavily customize their look to match the 'Swiss High-Contrast' theme (flat, crisp, minimal).",
+    "forms": "Use Shadcn Input, Select, DatePicker. Align labels to the top or left. Ensure the 'Input Transaksi' form is highly optimized for fast keyboard data entry.",
+    "tables": "Use Shadcn Table. Make sure to implement horizontal scrolling for 'Tabel Rekap' as it will have many columns (Tanggal, Customer, Produk, Varian, Harga, Qty, Total, Status).",
+    "charts": "Use Recharts or Shadcn Charts. For 'Omset Trends', use an AreaChart with a subtle blue gradient. For 'Sisa Tagihan / Belum Lunas', use a BarChart (red hues).",
+    "notifications": "Use Sonner for toast notifications (e.g., 'Transaksi Berhasil Disimpan')."
+  },
+  "visual_enhancers": {
+    "borders": "Expose the skeleton. Use border-r and border-b on grid items for a technical, crisp look.",
+    "micro_interactions": "Buttons should have active:scale-[0.98] and hover color shifts. Table rows should have hover:bg-slate-50."
+  },
+  "images": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1584968124544-d10ce10dd21f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGZsdWlkJTIwYmx1ZXxlbnwwfHx8fDE3ODcyODA1NzZ8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Deep blue abstract fluid artwork. Use this on the left side of a 50/50 split-screen Login page, covering the full height (h-screen, object-cover). Apply a subtle black/20 overlay so any white logo placed on it pops."
+    },
+    "empty_state": {
+      "url": "https://images.pexels.com/photos/17229385/pexels-photo-17229385.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Warehouse/Forklift scene. Use cautiously (with heavy opacity reduction, e.g., opacity-10) if an empty state illustration is needed for the dashboard."
+    }
+  },
+  "accessibility": {
+    "contrast": "Ensure all text meets APCA / WCAG AA standards. Never put light gray text on a white background.",
+    "focus": "All interactive elements MUST have focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1.",
+    "testing": "All interactive and key informational elements MUST include a `data-testid` attribute. E.g., `data-testid='btn-submit-transaction'`, `data-testid='input-customer-name'`."
+  },
+  "universal_guidelines_for_main_agent": [
+    "You tend to converge toward generic outputs. Break this by making the dashboard feel incredibly crisp, fast, and distinctly branded for an industrial/logistics context.",
+    "Do not use dark colors as gradients. Use solid fills.",
+    "Never center align the app container. Align text left for natural reading flow, especially in data tables and forms.",
+    "Never use generic AI emojis for icons. Use Phosphor Icons, Lucide React, or similar professional sets.",
+    "Never use purely transparent backgrounds on elements that float over content (like headers or dropdowns). Use solid white or backdrop-blur with a background color (bg-white/90).",
+    "Use 2-3x more spacing for container paddings (p-6, p-8) to give the dense data room to breathe.",
+    "For the 'Input Transaksi' page, create a seamless flow: Select Customer -> Select Product & Varian (1200/550/330/230/GALON) -> Auto-fill Harga based on tier (Grosir/SO/Retail) -> Input Qty -> Auto-calculate Total -> Select Lunas/Belum Lunas.",
+    "For the 'Belum Lunas' dashboard metric, prioritize visibility. Outstanding receivables (Sisa Tagihan) is a critical business metric for this user. Make it prominent (Red/Warning styling).",
+    "Prioritize reusing components from src/components/ui.",
+    "In Javascript/React files (.jsx or .js), ensure prop types or clear default values are used since this isn't TypeScript."
+  ]
+}
