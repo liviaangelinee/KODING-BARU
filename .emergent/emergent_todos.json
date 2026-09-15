@@ -1,0 +1,54 @@
+[
+  {
+    "content": "Backend: tambah field harga_pabrik di varian Produk + migrasi data lama",
+    "status": "completed"
+  },
+  {
+    "content": "Backend: snapshot harga_pabrik & HPP di setiap item transaksi (agar laba historis akurat)",
+    "status": "completed"
+  },
+  {
+    "content": "Backend: CRUD PO Pabrik + status bayar (hutang ke pabrik)",
+    "status": "completed"
+  },
+  {
+    "content": "Backend: CRUD Pengeluaran (BBM/Transport/Armada, Lain-lain)",
+    "status": "completed"
+  },
+  {
+    "content": "Backend: endpoint Laba (Laba Kotor = Omset - HPP, Laba Bersih = Laba Kotor - Pengeluaran) + Laporan Pembelian",
+    "status": "completed"
+  },
+  {
+    "content": "Backend: update Dashboard stats (laba bersih, pengeluaran, hutang pabrik)",
+    "status": "completed"
+  },
+  {
+    "content": "Backend: export Excel & PDF untuk Laporan Pembelian dan Laporan Laba",
+    "status": "completed"
+  },
+  {
+    "content": "Frontend: halaman PO Pabrik (input, filter, status bayar, hapus)",
+    "status": "completed"
+  },
+  {
+    "content": "Frontend: halaman Pengeluaran (input, filter, rekap per kategori)",
+    "status": "completed"
+  },
+  {
+    "content": "Frontend: halaman Laba & Keuangan (kartu, grafik, breakdown, export)",
+    "status": "completed"
+  },
+  {
+    "content": "Frontend: update Produk (kolom Harga Pabrik), Layout (3 menu baru), Dashboard, Transaksi (kolom Laba), App.js routes",
+    "status": "completed"
+  },
+  {
+    "content": "Testing: end-to-end semua fitur baru pakai testing agent + pastikan fitur lama tidak rusak",
+    "status": "completed"
+  },
+  {
+    "content": "Bersihkan data contoh & kosongkan harga pabrik agar user isi harga asli",
+    "status": "completed"
+  }
+]

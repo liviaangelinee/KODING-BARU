@@ -7,6 +7,9 @@ import {
   AlertTriangle,
   Users,
   TrendingUp,
+  Factory,
+  PiggyBank,
+  Package,
 } from "lucide-react";
 import {
   AreaChart,
@@ -20,27 +23,30 @@ import {
   CartesianGrid,
 } from "recharts";
 
-function StatCard({ icon: Icon, label, value, tone = "default", testid }) {
+function StatCard({ icon: Icon, label, value, tone = "default", sub, testid }) {
   const tones = {
     default: "text-slate-900",
     danger: "text-red-600",
     success: "text-emerald-600",
     blue: "text-blue-600",
+    amber: "text-amber-600",
   };
   const bg = {
     default: "bg-slate-100 text-slate-600",
     danger: "bg-red-100 text-red-600",
     success: "bg-emerald-100 text-emerald-600",
     blue: "bg-blue-100 text-blue-600",
+    amber: "bg-amber-100 text-amber-600",
   };
   return (
     <Card className="p-5 border-slate-200 shadow-none rounded-lg" data-testid={testid}>
       <div className="flex items-start justify-between">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
           <p className={`mt-2 text-2xl font-heading font-bold tabular ${tones[tone]}`}>{value}</p>
+          {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
         </div>
-        <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${bg[tone]}`}>
+        <div className={`h-10 w-10 shrink-0 rounded-lg flex items-center justify-center ${bg[tone]}`}>
           <Icon className="h-5 w-5" />
         </div>
       </div>
@@ -69,6 +75,31 @@ export default function Dashboard() {
         <StatCard icon={Receipt} label="Total Transaksi" value={stats.total_txn} testid="stat-txn" />
         <StatCard icon={AlertTriangle} label="Sisa Tagihan" value={rupiah(stats.sisa_tagihan)} tone="danger" testid="stat-sisa" />
         <StatCard icon={Users} label="Total Customer" value={stats.total_customer} tone="success" testid="stat-customer" />
+      </div>
+
+      {/* Ringkasan keuangan bulan berjalan */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <PiggyBank className="h-4 w-4 text-emerald-600" />
+          <h2 className="font-heading font-semibold text-slate-800">
+            Keuangan Bulan Ini
+            <span className="ml-2 text-xs font-normal text-slate-400 tabular">{stats.bulan_ini}</span>
+          </h2>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          <StatCard icon={Wallet} label="Omset" value={rupiah(stats.omset_bulan)} tone="blue" testid="stat-omset-bulan" />
+          <StatCard icon={Package} label="HPP" value={rupiah(stats.hpp_bulan)} tone="amber" sub="Modal barang terjual" testid="stat-hpp-bulan" />
+          <StatCard icon={Receipt} label="Pengeluaran" value={rupiah(stats.pengeluaran_bulan)} tone="danger" testid="stat-pengeluaran-bulan" />
+          <StatCard
+            icon={PiggyBank}
+            label="Laba Bersih"
+            value={rupiah(stats.laba_bersih_bulan)}
+            tone={stats.laba_bersih_bulan >= 0 ? "success" : "danger"}
+            sub={stats.laba_bersih_bulan >= 0 ? "Untung" : "Rugi"}
+            testid="stat-laba-bersih-bulan"
+          />
+          <StatCard icon={Factory} label="Hutang ke Pabrik" value={rupiah(stats.hutang_pabrik)} tone="danger" sub={`PO bulan ini ${rupiah(stats.po_pabrik_bulan)}`} testid="stat-hutang-pabrik" />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

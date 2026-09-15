@@ -24,7 +24,7 @@ import {
 import { Plus, Pencil, Trash2, Package } from "lucide-react";
 import { toast } from "sonner";
 
-const emptyVariant = () => ({ label: "", harga_grosir: 0, harga_so: 0, harga_retail: 0 });
+const emptyVariant = () => ({ label: "", harga_pabrik: 0, harga_grosir: 0, harga_so: 0, harga_retail: 0 });
 
 export default function Produk() {
   const [products, setProducts] = useState([]);
@@ -62,6 +62,7 @@ export default function Produk() {
       .filter((v) => v.label.trim())
       .map((v) => ({
         label: v.label.trim(),
+        harga_pabrik: Number(v.harga_pabrik) || 0,
         harga_grosir: Number(v.harga_grosir) || 0,
         harga_so: Number(v.harga_so) || 0,
         harga_retail: Number(v.harga_retail) || 0,
@@ -122,6 +123,7 @@ export default function Produk() {
                 <thead>
                   <tr className="text-xs uppercase tracking-wide text-slate-500 border-b border-slate-200">
                     <th className="text-left py-1.5">Varian</th>
+                    <th className="text-right py-1.5">Pabrik</th>
                     <th className="text-right py-1.5">Grosir</th>
                     <th className="text-right py-1.5">SO</th>
                     <th className="text-right py-1.5">Retail</th>
@@ -131,6 +133,9 @@ export default function Produk() {
                   {p.variants.map((v) => (
                     <tr key={v.label} className="border-b border-slate-100">
                       <td className="py-1.5 font-medium text-slate-700">{v.label}</td>
+                      <td className={`py-1.5 text-right tabular ${Number(v.harga_pabrik) > 0 ? "text-amber-600 font-medium" : "text-red-400"}`}>
+                        {Number(v.harga_pabrik) > 0 ? rupiah(v.harga_pabrik) : "belum diisi"}
+                      </td>
                       <td className="py-1.5 text-right tabular text-slate-600">{rupiah(v.harga_grosir)}</td>
                       <td className="py-1.5 text-right tabular text-slate-600">{rupiah(v.harga_so)}</td>
                       <td className="py-1.5 text-right tabular text-slate-600">{rupiah(v.harga_retail)}</td>
@@ -160,17 +165,23 @@ export default function Produk() {
                   <Plus className="h-3.5 w-3.5 mr-1" /> Varian
                 </Button>
               </div>
+              <p className="text-xs text-slate-500 mb-2">
+                <span className="font-semibold text-amber-600">Harga Pabrik</span> adalah harga beli dari pabrik.
+                Dipakai sebagai HPP untuk menghitung laba, dan jadi harga default saat input PO Pabrik.
+              </p>
               <div className="space-y-2">
                 <div className="grid grid-cols-12 gap-2 text-xs uppercase text-slate-400 px-1">
-                  <div className="col-span-3">Label</div>
-                  <div className="col-span-3">Grosir</div>
+                  <div className="col-span-2">Label</div>
+                  <div className="col-span-2 text-amber-600">Pabrik</div>
+                  <div className="col-span-2">Grosir</div>
                   <div className="col-span-2">SO</div>
                   <div className="col-span-3">Retail</div>
                 </div>
                 {variants.map((v, i) => (
                   <div key={i} className="grid grid-cols-12 gap-2 items-center">
-                    <Input className="col-span-3" value={v.label} onChange={(e) => setV(i, "label", e.target.value)} placeholder="1200" data-testid={`variant-label-${i}`} />
-                    <Input className="col-span-3" type="number" value={v.harga_grosir} onChange={(e) => setV(i, "harga_grosir", e.target.value)} data-testid={`variant-grosir-${i}`} />
+                    <Input className="col-span-2" value={v.label} onChange={(e) => setV(i, "label", e.target.value)} placeholder="1200" data-testid={`variant-label-${i}`} />
+                    <Input className="col-span-2 border-amber-200 focus-visible:ring-amber-400" type="number" value={v.harga_pabrik} onChange={(e) => setV(i, "harga_pabrik", e.target.value)} data-testid={`variant-pabrik-${i}`} />
+                    <Input className="col-span-2" type="number" value={v.harga_grosir} onChange={(e) => setV(i, "harga_grosir", e.target.value)} data-testid={`variant-grosir-${i}`} />
                     <Input className="col-span-2" type="number" value={v.harga_so} onChange={(e) => setV(i, "harga_so", e.target.value)} data-testid={`variant-so-${i}`} />
                     <Input className="col-span-3" type="number" value={v.harga_retail} onChange={(e) => setV(i, "harga_retail", e.target.value)} data-testid={`variant-retail-${i}`} />
                     <Button size="icon" variant="ghost" className="col-span-1" onClick={() => setVariants((p) => p.filter((_, idx) => idx !== i))}>

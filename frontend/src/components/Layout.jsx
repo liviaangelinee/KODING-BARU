@@ -10,11 +10,17 @@ import {
   Droplets,
   LogOut,
   UserCog,
+  Factory,
+  Wallet,
+  PiggyBank,
 } from "lucide-react";
 
 const nav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, testid: "nav-dashboard" },
   { to: "/transaksi", label: "Transaksi", icon: Receipt, testid: "nav-transaksi" },
+  { to: "/po-pabrik", label: "PO Pabrik", icon: Factory, testid: "nav-po-pabrik" },
+  { to: "/pengeluaran", label: "Pengeluaran", icon: Wallet, testid: "nav-pengeluaran" },
+  { to: "/laba", label: "Laba & Keuangan", icon: PiggyBank, testid: "nav-laba" },
   { to: "/rekap-bulanan", label: "Rekap Bulanan", icon: CalendarRange, testid: "nav-rekap" },
   { to: "/produk", label: "Produk", icon: Package, testid: "nav-produk" },
   { to: "/customer", label: "Customer", icon: Users, testid: "nav-customer" },

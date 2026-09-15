@@ -20,6 +20,7 @@ import jwt
 from bson import ObjectId
 
 import openpyxl
+from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -108,6 +109,7 @@ class UpdatePasswordInput(BaseModel):
 
 class Variant(BaseModel):
     label: str
+    harga_pabrik: float = 0   # harga beli dari pabrik (dasar perhitungan HPP/laba)
     harga_grosir: float = 0
     harga_so: float = 0
     harga_retail: float = 0
@@ -130,6 +132,10 @@ class TransactionItem(BaseModel):
     harga_satuan: float
     qty: float
     subtotal: float
+    # Snapshot harga pabrik saat transaksi dibuat. Disimpan per item supaya laba
+    # historis tetap akurat walaupun harga pabrik berubah di kemudian hari.
+    harga_pabrik: float = 0
+    hpp_subtotal: float = 0
 
 class TransactionInput(BaseModel):
     tanggal: str  # YYYY-MM-DD
@@ -138,6 +144,32 @@ class TransactionInput(BaseModel):
     items: List[TransactionItem]
     status: Literal["lunas", "belum_lunas"] = "lunas"
     catatan: str = ""
+
+# ----------------------- PO Pabrik & Pengeluaran -----------------------
+
+EXPENSE_CATEGORIES = ["BBM / Transport / Armada", "Lain-lain"]
+
+class POItem(BaseModel):
+    product_id: str = ""
+    product_nama: str
+    variant_label: str
+    harga_pabrik: float = 0
+    qty: float = 0
+    subtotal: float = 0
+
+class PurchaseOrderInput(BaseModel):
+    tanggal: str  # YYYY-MM-DD
+    pabrik: str
+    no_po: str = ""
+    items: List[POItem]
+    status: Literal["lunas", "belum_lunas"] = "belum_lunas"
+    catatan: str = ""
+
+class ExpenseInput(BaseModel):
+    tanggal: str  # YYYY-MM-DD
+    kategori: str
+    deskripsi: str = ""
+    jumlah: float
 
 # ----------------------- Auth routes -----------------------
 
@@ -326,20 +358,58 @@ def build_txn_query(date_from, date_to, customer_id, status):
         q["status"] = status
     return q
 
+async def enrich_items_with_hpp(items: List[TransactionItem]) -> List[dict]:
+    """Isi harga_pabrik + hpp_subtotal pada setiap item transaksi.
+
+    Harga pabrik diambil dari varian produk saat transaksi dibuat, lalu di-SNAPSHOT
+    ke dalam item. Dengan begitu laba periode lampau tidak berubah ketika harga
+    pabrik dinaikkan di menu Produk.
+    """
+    pids = list({i.product_id for i in items if i.product_id})
+    prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(1000)
+    pmap = {p["id"]: p for p in prods}
+    out = []
+    for i in items:
+        d = i.model_dump()
+        hp = float(d.get("harga_pabrik") or 0)
+        if hp <= 0:
+            p = pmap.get(i.product_id)
+            if p:
+                v = next((x for x in p.get("variants", []) if x.get("label") == i.variant_label), None)
+                if v:
+                    hp = float(v.get("harga_pabrik") or 0)
+        d["harga_pabrik"] = hp
+        d["hpp_subtotal"] = hp * float(d.get("qty") or 0)
+        out.append(d)
+    return out
+
+def txn_hpp(t: dict) -> float:
+    """HPP sebuah transaksi, tahan terhadap dokumen lama tanpa field total_hpp."""
+    if t.get("total_hpp") is not None:
+        return float(t["total_hpp"])
+    return sum(float(it.get("hpp_subtotal") or 0) for it in t.get("items", []))
+
 @api_router.get("/transactions")
 async def list_transactions(date_from: Optional[str] = None, date_to: Optional[str] = None,
                             customer_id: Optional[str] = None, status: Optional[str] = None,
                             user: dict = Depends(get_current_user)):
     q = build_txn_query(date_from, date_to, customer_id, status)
     items = await db.transactions.find(q, {"_id": 0}).sort("tanggal", -1).to_list(5000)
+    for t in items:
+        hpp = txn_hpp(t)
+        t["total_hpp"] = hpp
+        t["laba_kotor"] = float(t.get("total") or 0) - hpp
     return items
 
 @api_router.post("/transactions")
 async def create_transaction(data: TransactionInput, user: dict = Depends(get_current_user)):
     total = sum(i.subtotal for i in data.items)
+    enriched = await enrich_items_with_hpp(data.items)
+    total_hpp = sum(i["hpp_subtotal"] for i in enriched)
     doc = {"id": str(uuid.uuid4()), "tanggal": data.tanggal, "customer_id": data.customer_id,
-           "customer_nama": data.customer_nama, "items": [i.model_dump() for i in data.items],
-           "total": total, "status": data.status, "catatan": data.catatan,
+           "customer_nama": data.customer_nama, "items": enriched,
+           "total": total, "total_hpp": total_hpp, "laba_kotor": total - total_hpp,
+           "status": data.status, "catatan": data.catatan,
            "created_at": datetime.now(timezone.utc).isoformat()}
     await db.transactions.insert_one(doc.copy())
     doc.pop("_id", None)
@@ -348,9 +418,12 @@ async def create_transaction(data: TransactionInput, user: dict = Depends(get_cu
 @api_router.put("/transactions/{txn_id}")
 async def update_transaction(txn_id: str, data: TransactionInput, user: dict = Depends(get_current_user)):
     total = sum(i.subtotal for i in data.items)
+    enriched = await enrich_items_with_hpp(data.items)
+    total_hpp = sum(i["hpp_subtotal"] for i in enriched)
     res = await db.transactions.update_one({"id": txn_id}, {"$set": {
         "tanggal": data.tanggal, "customer_id": data.customer_id, "customer_nama": data.customer_nama,
-        "items": [i.model_dump() for i in data.items], "total": total,
+        "items": enriched, "total": total, "total_hpp": total_hpp,
+        "laba_kotor": total - total_hpp,
         "status": data.status, "catatan": data.catatan}})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan")
@@ -408,9 +481,22 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         [{"customer": k, "sisa": v} for k, v in outstanding.items()],
         key=lambda x: x["sisa"], reverse=True)
 
+    # Ringkasan keuangan bulan berjalan
+    now = datetime.now(timezone.utc)
+    prefix = f"{now.year:04d}-{now.month:02d}"
+    laba = await compute_laba(prefix)
+
     return {"total_omset": total_omset, "total_txn": total_txn, "sisa_tagihan": sisa_tagihan,
             "total_customer": total_customer, "trend": trend, "top_products": top_products,
-            "outstanding": outstanding_list}
+            "outstanding": outstanding_list,
+            "bulan_ini": prefix,
+            "omset_bulan": laba["omset"],
+            "hpp_bulan": laba["hpp"],
+            "laba_kotor_bulan": laba["laba_kotor"],
+            "pengeluaran_bulan": laba["pengeluaran"],
+            "laba_bersih_bulan": laba["laba_bersih"],
+            "po_pabrik_bulan": laba["total_po_pabrik"],
+            "hutang_pabrik": laba["hutang_pabrik"]}
 
 @api_router.get("/rekap/monthly")
 async def rekap_monthly(year: int, month: int, user: dict = Depends(get_current_user)):
@@ -453,10 +539,283 @@ async def rekap_monthly(year: int, month: int, user: dict = Depends(get_current_
     return {"total_omset": total_omset, "total_txn": total_txn, "sisa_tagihan": sisa, "lunas": lunas,
             "per_product": per_product, "per_customer": per_customer, "per_day": per_day}
 
+# ----------------------- PO Pabrik (Pembelian) -----------------------
+
+def build_po_query(date_from, date_to, status, pabrik):
+    q = {}
+    if date_from and date_to:
+        q["tanggal"] = {"$gte": date_from, "$lte": date_to}
+    elif date_from:
+        q["tanggal"] = {"$gte": date_from}
+    elif date_to:
+        q["tanggal"] = {"$lte": date_to}
+    if status:
+        q["status"] = status
+    if pabrik:
+        q["pabrik"] = pabrik
+    return q
+
+@api_router.get("/purchase-orders")
+async def list_purchase_orders(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                               status: Optional[str] = None, pabrik: Optional[str] = None,
+                               user: dict = Depends(get_current_user)):
+    q = build_po_query(date_from, date_to, status, pabrik)
+    return await db.purchase_orders.find(q, {"_id": 0}).sort("tanggal", -1).to_list(5000)
+
+@api_router.get("/purchase-orders/pabrik-list")
+async def pabrik_list(user: dict = Depends(get_current_user)):
+    names = await db.purchase_orders.distinct("pabrik")
+    return sorted([n for n in names if n])
+
+@api_router.post("/purchase-orders")
+async def create_purchase_order(data: PurchaseOrderInput, user: dict = Depends(get_current_user)):
+    if not data.pabrik.strip():
+        raise HTTPException(status_code=422, detail="Nama pabrik wajib diisi")
+    if not data.items:
+        raise HTTPException(status_code=422, detail="Minimal satu item pembelian")
+    items = [i.model_dump() for i in data.items]
+    total = sum(float(i["harga_pabrik"]) * float(i["qty"]) for i in items)
+    for i in items:
+        i["subtotal"] = float(i["harga_pabrik"]) * float(i["qty"])
+    doc = {"id": str(uuid.uuid4()), "tanggal": data.tanggal, "pabrik": data.pabrik.strip(),
+           "no_po": data.no_po.strip(), "items": items, "total": total,
+           "status": data.status, "catatan": data.catatan,
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.purchase_orders.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return doc
+
+@api_router.put("/purchase-orders/{po_id}")
+async def update_purchase_order(po_id: str, data: PurchaseOrderInput, user: dict = Depends(get_current_user)):
+    items = [i.model_dump() for i in data.items]
+    for i in items:
+        i["subtotal"] = float(i["harga_pabrik"]) * float(i["qty"])
+    total = sum(i["subtotal"] for i in items)
+    res = await db.purchase_orders.update_one({"id": po_id}, {"$set": {
+        "tanggal": data.tanggal, "pabrik": data.pabrik.strip(), "no_po": data.no_po.strip(),
+        "items": items, "total": total, "status": data.status, "catatan": data.catatan}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="PO tidak ditemukan")
+    return await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+
+@api_router.patch("/purchase-orders/{po_id}/status")
+async def update_po_status(po_id: str, body: dict, user: dict = Depends(get_current_user)):
+    status = body.get("status")
+    if status not in ("lunas", "belum_lunas"):
+        raise HTTPException(status_code=400, detail="Status tidak valid")
+    res = await db.purchase_orders.update_one({"id": po_id}, {"$set": {"status": status}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="PO tidak ditemukan")
+    return {"message": "Status pembayaran PO diperbarui"}
+
+@api_router.delete("/purchase-orders/{po_id}")
+async def delete_purchase_order(po_id: str, user: dict = Depends(get_current_user)):
+    res = await db.purchase_orders.delete_one({"id": po_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="PO tidak ditemukan")
+    return {"message": "PO dihapus"}
+
+@api_router.get("/purchases/report")
+async def purchases_report(year: int, month: int, user: dict = Depends(get_current_user)):
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=422, detail="Bulan harus antara 1 dan 12")
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=422, detail="Tahun tidak valid")
+    prefix = f"{year:04d}-{month:02d}"
+    pos = await db.purchase_orders.find({"tanggal": {"$regex": f"^{prefix}"}}, {"_id": 0}).to_list(10000)
+
+    total_pembelian = sum(float(p.get("total") or 0) for p in pos)
+    jumlah_po = len(pos)
+    belum_bayar = sum(float(p.get("total") or 0) for p in pos if p.get("status") == "belum_lunas")
+    sudah_bayar = total_pembelian - belum_bayar
+
+    prod = {}
+    for p in pos:
+        for it in p.get("items", []):
+            key = f'{it.get("product_nama","")} {it.get("variant_label","")}'.strip()
+            if key not in prod:
+                prod[key] = {"nama": key, "qty": 0, "total": 0}
+            prod[key]["qty"] += float(it.get("qty") or 0)
+            prod[key]["total"] += float(it.get("subtotal") or 0)
+    per_product = sorted(prod.values(), key=lambda x: x["total"], reverse=True)
+
+    pab = {}
+    for p in pos:
+        nm = p.get("pabrik", "-")
+        if nm not in pab:
+            pab[nm] = {"pabrik": nm, "total": 0, "po": 0, "hutang": 0}
+        pab[nm]["total"] += float(p.get("total") or 0)
+        pab[nm]["po"] += 1
+        if p.get("status") == "belum_lunas":
+            pab[nm]["hutang"] += float(p.get("total") or 0)
+    per_pabrik = sorted(pab.values(), key=lambda x: x["total"], reverse=True)
+
+    daily = {}
+    for p in pos:
+        daily[p["tanggal"]] = daily.get(p["tanggal"], 0) + float(p.get("total") or 0)
+    per_day = [{"tanggal": k, "total": v} for k, v in sorted(daily.items())]
+
+    # hutang total ke pabrik (semua periode, bukan hanya bulan ini)
+    all_unpaid = await db.purchase_orders.find({"status": "belum_lunas"}, {"_id": 0}).to_list(10000)
+    hutang_total = sum(float(p.get("total") or 0) for p in all_unpaid)
+
+    return {"total_pembelian": total_pembelian, "jumlah_po": jumlah_po,
+            "belum_bayar": belum_bayar, "sudah_bayar": sudah_bayar,
+            "hutang_total": hutang_total, "per_product": per_product,
+            "per_pabrik": per_pabrik, "per_day": per_day}
+
+# ----------------------- Pengeluaran Operasional -----------------------
+
+@api_router.get("/expenses/categories")
+async def expense_categories(user: dict = Depends(get_current_user)):
+    saved = await db.expenses.distinct("kategori")
+    merged = list(EXPENSE_CATEGORIES)
+    for s in saved:
+        if s and s not in merged:
+            merged.append(s)
+    return merged
+
+@api_router.get("/expenses")
+async def list_expenses(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                        kategori: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if date_from and date_to:
+        q["tanggal"] = {"$gte": date_from, "$lte": date_to}
+    elif date_from:
+        q["tanggal"] = {"$gte": date_from}
+    elif date_to:
+        q["tanggal"] = {"$lte": date_to}
+    if kategori:
+        q["kategori"] = kategori
+    return await db.expenses.find(q, {"_id": 0}).sort("tanggal", -1).to_list(5000)
+
+@api_router.post("/expenses")
+async def create_expense(data: ExpenseInput, user: dict = Depends(get_current_user)):
+    if not data.kategori.strip():
+        raise HTTPException(status_code=422, detail="Kategori wajib diisi")
+    if float(data.jumlah) <= 0:
+        raise HTTPException(status_code=422, detail="Jumlah pengeluaran harus lebih dari 0")
+    doc = {"id": str(uuid.uuid4()), "tanggal": data.tanggal, "kategori": data.kategori.strip(),
+           "deskripsi": data.deskripsi.strip(), "jumlah": float(data.jumlah),
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.expenses.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return doc
+
+@api_router.put("/expenses/{exp_id}")
+async def update_expense(exp_id: str, data: ExpenseInput, user: dict = Depends(get_current_user)):
+    if float(data.jumlah) <= 0:
+        raise HTTPException(status_code=422, detail="Jumlah pengeluaran harus lebih dari 0")
+    res = await db.expenses.update_one({"id": exp_id}, {"$set": {
+        "tanggal": data.tanggal, "kategori": data.kategori.strip(),
+        "deskripsi": data.deskripsi.strip(), "jumlah": float(data.jumlah)}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Pengeluaran tidak ditemukan")
+    return await db.expenses.find_one({"id": exp_id}, {"_id": 0})
+
+@api_router.delete("/expenses/{exp_id}")
+async def delete_expense(exp_id: str, user: dict = Depends(get_current_user)):
+    res = await db.expenses.delete_one({"id": exp_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Pengeluaran tidak ditemukan")
+    return {"message": "Pengeluaran dihapus"}
+
+# ----------------------- Laba / Laporan Keuangan -----------------------
+
+async def variants_without_cost():
+    """Varian produk yang belum diisi Harga Pabrik -> laba kotor belum akurat."""
+    prods = await db.products.find({}, {"_id": 0}).to_list(1000)
+    missing = []
+    for p in prods:
+        for v in p.get("variants", []):
+            if float(v.get("harga_pabrik") or 0) <= 0:
+                missing.append({"produk": p.get("nama", ""), "varian": v.get("label", "")})
+    return missing
+
+async def compute_laba(prefix: str):
+    """Hitung laba untuk periode 'YYYY-MM'.
+
+    Laba Kotor  = Omset Penjualan - HPP (harga pabrik barang yang TERJUAL)
+    Laba Bersih = Laba Kotor - Pengeluaran Operasional
+    """
+    txns = await db.transactions.find({"tanggal": {"$regex": f"^{prefix}"}}, {"_id": 0}).to_list(10000)
+    exps = await db.expenses.find({"tanggal": {"$regex": f"^{prefix}"}}, {"_id": 0}).to_list(10000)
+    pos = await db.purchase_orders.find({"tanggal": {"$regex": f"^{prefix}"}}, {"_id": 0}).to_list(10000)
+
+    omset = sum(float(t.get("total") or 0) for t in txns)
+    hpp = sum(txn_hpp(t) for t in txns)
+    laba_kotor = omset - hpp
+    pengeluaran = sum(float(e.get("jumlah") or 0) for e in exps)
+    laba_bersih = laba_kotor - pengeluaran
+
+    kat = {}
+    for e in exps:
+        k = e.get("kategori", "Lain-lain")
+        kat[k] = kat.get(k, 0) + float(e.get("jumlah") or 0)
+    per_kategori = sorted([{"kategori": k, "jumlah": v} for k, v in kat.items()],
+                          key=lambda x: x["jumlah"], reverse=True)
+
+    prod = {}
+    for t in txns:
+        for it in t.get("items", []):
+            key = f'{it.get("product_nama","")} {it.get("variant_label","")}'.strip()
+            if key not in prod:
+                prod[key] = {"nama": key, "qty": 0, "omset": 0, "hpp": 0, "laba": 0}
+            prod[key]["qty"] += float(it.get("qty") or 0)
+            prod[key]["omset"] += float(it.get("subtotal") or 0)
+            prod[key]["hpp"] += float(it.get("hpp_subtotal") or 0)
+    for v in prod.values():
+        v["laba"] = v["omset"] - v["hpp"]
+    per_product = sorted(prod.values(), key=lambda x: x["laba"], reverse=True)
+
+    daily = {}
+    for t in txns:
+        d = daily.setdefault(t["tanggal"], {"tanggal": t["tanggal"], "omset": 0, "hpp": 0,
+                                            "pengeluaran": 0, "laba": 0})
+        d["omset"] += float(t.get("total") or 0)
+        d["hpp"] += txn_hpp(t)
+    for e in exps:
+        d = daily.setdefault(e["tanggal"], {"tanggal": e["tanggal"], "omset": 0, "hpp": 0,
+                                            "pengeluaran": 0, "laba": 0})
+        d["pengeluaran"] += float(e.get("jumlah") or 0)
+    for d in daily.values():
+        d["laba"] = d["omset"] - d["hpp"] - d["pengeluaran"]
+    per_day = [daily[k] for k in sorted(daily.keys())]
+
+    all_unpaid = await db.purchase_orders.find({"status": "belum_lunas"}, {"_id": 0}).to_list(10000)
+
+    return {
+        "omset": omset,
+        "hpp": hpp,
+        "laba_kotor": laba_kotor,
+        "pengeluaran": pengeluaran,
+        "laba_bersih": laba_bersih,
+        "margin_kotor_pct": round(laba_kotor / omset * 100, 2) if omset else 0,
+        "margin_bersih_pct": round(laba_bersih / omset * 100, 2) if omset else 0,
+        "total_txn": len(txns),
+        "total_po_pabrik": sum(float(p.get("total") or 0) for p in pos),
+        "jumlah_po": len(pos),
+        "hutang_pabrik": sum(float(p.get("total") or 0) for p in all_unpaid),
+        "per_kategori": per_kategori,
+        "per_product": per_product,
+        "per_day": per_day,
+        "varian_tanpa_harga_pabrik": await variants_without_cost(),
+    }
+
+@api_router.get("/laba")
+async def laba_report(year: int, month: int, user: dict = Depends(get_current_user)):
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=422, detail="Bulan harus antara 1 dan 12")
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=422, detail="Tahun tidak valid")
+    return await compute_laba(f"{year:04d}-{month:02d}")
+
 # ----------------------- Export -----------------------
 
 def rupiah(n):
-    return "Rp " + f"{int(round(n)):,}".replace(",", ".")
+    val = int(round(float(n or 0)))
+    prefix = "-Rp " if val < 0 else "Rp "
+    return prefix + f"{abs(val):,}".replace(",", ".")
 
 async def fetch_txns(date_from, date_to, customer_id, status):
     q = build_txn_query(date_from, date_to, customer_id, status)
@@ -535,6 +894,194 @@ async def export_pdf(date_from: Optional[str] = None, date_to: Optional[str] = N
     return StreamingResponse(buf, media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=rekap_penjualan.pdf"})
 
+BULAN_ID = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+            "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+
+def _style_header(ws, ncols):
+    header_fill = PatternFill(start_color="1D4ED8", end_color="1D4ED8", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    for c in ws[1]:
+        c.fill = header_fill
+        c.font = header_font
+    for i in range(1, ncols + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 20
+
+def _xlsx_response(wb, filename):
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+def _pdf_table(data, col_widths=None):
+    tbl = Table(data, repeatRows=1, colWidths=col_widths)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D4ED8")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return tbl
+
+@api_router.get("/export/purchases/excel")
+async def export_purchases_excel(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                                 status: Optional[str] = None, pabrik: Optional[str] = None,
+                                 user: dict = Depends(get_current_user)):
+    q = build_po_query(date_from, date_to, status, pabrik)
+    pos = await db.purchase_orders.find(q, {"_id": 0}).sort("tanggal", 1).to_list(10000)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Laporan Pembelian"
+    ws.append(["Tanggal", "No PO", "Pabrik", "Produk", "Varian", "Harga Pabrik", "Qty", "Subtotal", "Status Bayar"])
+    _style_header(ws, 9)
+    for p in pos:
+        for it in p.get("items", []):
+            ws.append([p["tanggal"], p.get("no_po", ""), p.get("pabrik", ""),
+                       it.get("product_nama", ""), it.get("variant_label", ""),
+                       float(it.get("harga_pabrik") or 0), float(it.get("qty") or 0),
+                       float(it.get("subtotal") or 0),
+                       "Sudah Bayar" if p.get("status") == "lunas" else "Belum Bayar"])
+    total = sum(float(p.get("total") or 0) for p in pos)
+    hutang = sum(float(p.get("total") or 0) for p in pos if p.get("status") == "belum_lunas")
+    ws.append([])
+    ws.append(["", "", "", "", "", "", "", "TOTAL PEMBELIAN", total])
+    ws.append(["", "", "", "", "", "", "", "HUTANG KE PABRIK", hutang])
+    return _xlsx_response(wb, "laporan_pembelian.xlsx")
+
+@api_router.get("/export/purchases/pdf")
+async def export_purchases_pdf(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                               status: Optional[str] = None, pabrik: Optional[str] = None,
+                               user: dict = Depends(get_current_user)):
+    q = build_po_query(date_from, date_to, status, pabrik)
+    pos = await db.purchase_orders.find(q, {"_id": 0}).sort("tanggal", 1).to_list(10000)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=18, bottomMargin=18,
+                            leftMargin=18, rightMargin=18)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("t", parent=styles["Title"], fontSize=16, textColor=colors.HexColor("#0f172a"))
+    elems = [Paragraph("Laporan Pembelian ke Pabrik", title_style),
+             Paragraph(f"Periode: {date_from or 'Semua'} s/d {date_to or 'Semua'}", styles["Normal"]),
+             Spacer(1, 10)]
+    data = [["Tanggal", "No PO", "Pabrik", "Produk", "Varian", "Harga", "Qty", "Subtotal", "Status"]]
+    for p in pos:
+        for it in p.get("items", []):
+            data.append([p["tanggal"], p.get("no_po", "-"), p.get("pabrik", ""),
+                         it.get("product_nama", ""), it.get("variant_label", ""),
+                         rupiah(it.get("harga_pabrik") or 0), str(int(float(it.get("qty") or 0))),
+                         rupiah(it.get("subtotal") or 0),
+                         "Sudah Bayar" if p.get("status") == "lunas" else "Belum Bayar"])
+    if len(data) == 1:
+        data.append(["-"] * 9)
+    elems.append(_pdf_table(data))
+    total = sum(float(p.get("total") or 0) for p in pos)
+    hutang = sum(float(p.get("total") or 0) for p in pos if p.get("status") == "belum_lunas")
+    elems.append(Spacer(1, 12))
+    elems.append(_pdf_table([["TOTAL PEMBELIAN", rupiah(total)], ["HUTANG KE PABRIK", rupiah(hutang)]]))
+    doc.build(elems)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=laporan_pembelian.pdf"})
+
+@api_router.get("/export/laba/excel")
+async def export_laba_excel(year: int, month: int, user: dict = Depends(get_current_user)):
+    if month < 1 or month > 12 or year < 2000 or year > 2100:
+        raise HTTPException(status_code=422, detail="Periode tidak valid")
+    r = await compute_laba(f"{year:04d}-{month:02d}")
+    periode = f"{BULAN_ID[month]} {year}"
+    wb = openpyxl.Workbook()
+
+    ws = wb.active
+    ws.title = "Ringkasan Laba"
+    ws.append(["Keterangan", "Jumlah"])
+    _style_header(ws, 2)
+    for label, val in [
+        (f"Periode: {periode}", ""),
+        ("Omset Penjualan", r["omset"]),
+        ("HPP (Harga Pabrik Barang Terjual)", r["hpp"]),
+        ("LABA KOTOR", r["laba_kotor"]),
+        ("Pengeluaran Operasional", r["pengeluaran"]),
+        ("LABA BERSIH", r["laba_bersih"]),
+        ("Margin Kotor (%)", r["margin_kotor_pct"]),
+        ("Margin Bersih (%)", r["margin_bersih_pct"]),
+        ("Total PO ke Pabrik (bulan ini)", r["total_po_pabrik"]),
+        ("Hutang ke Pabrik (belum dibayar)", r["hutang_pabrik"]),
+    ]:
+        ws.append([label, val])
+
+    ws2 = wb.create_sheet("Laba per Produk")
+    ws2.append(["Produk", "Qty Terjual", "Omset", "HPP", "Laba"])
+    _style_header(ws2, 5)
+    for p in r["per_product"]:
+        ws2.append([p["nama"], p["qty"], p["omset"], p["hpp"], p["laba"]])
+
+    ws3 = wb.create_sheet("Pengeluaran")
+    ws3.append(["Kategori", "Jumlah"])
+    _style_header(ws3, 2)
+    for k in r["per_kategori"]:
+        ws3.append([k["kategori"], k["jumlah"]])
+
+    ws4 = wb.create_sheet("Harian")
+    ws4.append(["Tanggal", "Omset", "HPP", "Pengeluaran", "Laba"])
+    _style_header(ws4, 5)
+    for d in r["per_day"]:
+        ws4.append([d["tanggal"], d["omset"], d["hpp"], d["pengeluaran"], d["laba"]])
+
+    return _xlsx_response(wb, f"laporan_laba_{year}_{month:02d}.xlsx")
+
+@api_router.get("/export/laba/pdf")
+async def export_laba_pdf(year: int, month: int, user: dict = Depends(get_current_user)):
+    if month < 1 or month > 12 or year < 2000 or year > 2100:
+        raise HTTPException(status_code=422, detail="Periode tidak valid")
+    r = await compute_laba(f"{year:04d}-{month:02d}")
+    periode = f"{BULAN_ID[month]} {year}"
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=20, bottomMargin=20,
+                            leftMargin=24, rightMargin=24)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("t", parent=styles["Title"], fontSize=16, textColor=colors.HexColor("#0f172a"))
+    h = ParagraphStyle("h", parent=styles["Heading3"], textColor=colors.HexColor("#1D4ED8"))
+    elems = [Paragraph("Laporan Laba / Rugi", title_style),
+             Paragraph(f"CV Citra Pangan Lestari — Periode {periode}", styles["Normal"]),
+             Spacer(1, 12), Paragraph("Ringkasan", h)]
+    elems.append(_pdf_table([
+        ["Omset Penjualan", rupiah(r["omset"])],
+        ["HPP (Harga Pabrik Barang Terjual)", "- " + rupiah(r["hpp"])],
+        ["LABA KOTOR", rupiah(r["laba_kotor"])],
+        ["Pengeluaran Operasional", "- " + rupiah(r["pengeluaran"])],
+        ["LABA BERSIH", rupiah(r["laba_bersih"])],
+        ["Margin Bersih", f'{r["margin_bersih_pct"]}%'],
+        ["Total PO ke Pabrik (bulan ini)", rupiah(r["total_po_pabrik"])],
+        ["Hutang ke Pabrik (belum dibayar)", rupiah(r["hutang_pabrik"])],
+    ], col_widths=[280, 240]))
+
+    elems.append(Spacer(1, 14))
+    elems.append(Paragraph("Laba per Produk", h))
+    data = [["Produk", "Qty", "Omset", "HPP", "Laba"]]
+    for p in r["per_product"]:
+        data.append([p["nama"], str(int(p["qty"])), rupiah(p["omset"]), rupiah(p["hpp"]), rupiah(p["laba"])])
+    if len(data) == 1:
+        data.append(["Belum ada penjualan", "-", "-", "-", "-"])
+    elems.append(_pdf_table(data, col_widths=[180, 50, 100, 100, 100]))
+
+    elems.append(Spacer(1, 14))
+    elems.append(Paragraph("Pengeluaran Operasional", h))
+    data2 = [["Kategori", "Jumlah"]]
+    for k in r["per_kategori"]:
+        data2.append([k["kategori"], rupiah(k["jumlah"])])
+    if len(data2) == 1:
+        data2.append(["Belum ada pengeluaran", "-"])
+    elems.append(_pdf_table(data2, col_widths=[280, 240]))
+
+    doc.build(elems)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=laporan_laba_{year}_{month:02d}.pdf"})
+
 # ----------------------- Seed -----------------------
 
 SEED_PRODUCTS = [
@@ -549,10 +1096,59 @@ DEFAULT_PRICES = {
     "220": (20000, 22000, 24000), "GALON": (18000, 19000, 20000),
 }
 
+async def migrate_harga_pabrik():
+    """Tambah field harga_pabrik pada varian produk lama (default 0).
+
+    Nilainya sengaja 0, bukan angka karangan. Halaman Laba akan menampilkan
+    peringatan sampai pemilik mengisi harga pabrik yang sebenarnya di menu Produk.
+    """
+    updated = 0
+    async for p in db.products.find({}):
+        variants = p.get("variants", [])
+        changed = False
+        for v in variants:
+            if "harga_pabrik" not in v:
+                v["harga_pabrik"] = 0
+                changed = True
+        if changed:
+            await db.products.update_one({"_id": p["_id"]}, {"$set": {"variants": variants}})
+            updated += 1
+    if updated:
+        logger.info(f"Migrasi harga_pabrik: {updated} produk diperbarui")
+
+async def migrate_transaction_hpp():
+    """Lengkapi transaksi lama dengan snapshot HPP memakai harga pabrik saat ini."""
+    prods = await db.products.find({}, {"_id": 0}).to_list(1000)
+    pmap = {p["id"]: p for p in prods}
+    updated = 0
+    async for t in db.transactions.find({"total_hpp": {"$exists": False}}):
+        items = t.get("items", [])
+        for it in items:
+            hp = float(it.get("harga_pabrik") or 0)
+            if hp <= 0:
+                p = pmap.get(it.get("product_id"))
+                if p:
+                    v = next((x for x in p.get("variants", []) if x.get("label") == it.get("variant_label")), None)
+                    if v:
+                        hp = float(v.get("harga_pabrik") or 0)
+            it["harga_pabrik"] = hp
+            it["hpp_subtotal"] = hp * float(it.get("qty") or 0)
+        total_hpp = sum(float(i.get("hpp_subtotal") or 0) for i in items)
+        await db.transactions.update_one({"_id": t["_id"]}, {"$set": {
+            "items": items, "total_hpp": total_hpp,
+            "laba_kotor": float(t.get("total") or 0) - total_hpp}})
+        updated += 1
+    if updated:
+        logger.info(f"Migrasi HPP transaksi: {updated} transaksi diperbarui")
+
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)
     await db.login_attempts.create_index("identifier", unique=True)
+    await db.purchase_orders.create_index("tanggal")
+    await db.purchase_orders.create_index("status")
+    await db.expenses.create_index("tanggal")
+    await db.expenses.create_index("kategori")
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     # Seed admin only when no user exists yet. Do NOT overwrite an existing
@@ -568,10 +1164,14 @@ async def startup():
             variants = []
             for lb in labels:
                 g, s, r = DEFAULT_PRICES.get(lb, (0, 0, 0))
-                variants.append({"label": lb, "harga_grosir": g, "harga_so": s, "harga_retail": r})
+                variants.append({"label": lb, "harga_pabrik": 0, "harga_grosir": g,
+                                 "harga_so": s, "harga_retail": r})
             await db.products.insert_one({"id": str(uuid.uuid4()), "nama": nama, "variants": variants,
                                           "created_at": datetime.now(timezone.utc).isoformat()})
         logger.info("Produk awal dibuat")
+
+    await migrate_harga_pabrik()
+    await migrate_transaction_hpp()
 
 app.include_router(api_router)
 

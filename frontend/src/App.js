@@ -6,6 +6,9 @@ import Login from "@/pages/Login";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import Transaksi from "@/pages/Transaksi";
+import POPabrik from "@/pages/POPabrik";
+import Pengeluaran from "@/pages/Pengeluaran";
+import Laba from "@/pages/Laba";
 import RekapBulanan from "@/pages/RekapBulanan";
 import Produk from "@/pages/Produk";
 import Customer from "@/pages/Customer";
@@ -38,6 +41,9 @@ function AppRoutes() {
       >
         <Route index element={<Dashboard />} />
         <Route path="transaksi" element={<Transaksi />} />
+        <Route path="po-pabrik" element={<POPabrik />} />
+        <Route path="pengeluaran" element={<Pengeluaran />} />
+        <Route path="laba" element={<Laba />} />
         <Route path="rekap-bulanan" element={<RekapBulanan />} />
         <Route path="produk" element={<Produk />} />
         <Route path="customer" element={<Customer />} />

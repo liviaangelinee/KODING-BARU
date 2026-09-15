@@ -19,7 +19,8 @@ export function formatApiErrorDetail(detail) {
 
 export function rupiah(n) {
   const val = Number(n || 0);
-  return "Rp " + Math.round(val).toLocaleString("id-ID");
+  const abs = Math.abs(Math.round(val));
+  return (val < 0 ? "-Rp " : "Rp ") + abs.toLocaleString("id-ID");
 }
 
 export const PRICE_LABEL = { grosir: "Grosir", so: "SO", retail: "Retail" };

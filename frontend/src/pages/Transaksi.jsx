@@ -188,6 +188,7 @@ export default function Transaksi() {
   }, [txns]);
 
   const totalOmset = txns.reduce((s, t) => s + t.total, 0);
+  const totalLaba = txns.reduce((s, t) => s + Number(t.laba_kotor || 0), 0);
   const selectedCustomer = customers.find((x) => x.id === customerId);
 
   return (
@@ -370,7 +371,10 @@ export default function Transaksi() {
       <Card className="border-slate-200 shadow-none rounded-lg overflow-hidden" data-testid="rekap-table">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
           <h3 className="font-heading font-semibold text-slate-800">Tabel Rekap</h3>
-          <div className="text-sm text-slate-500">Total Omset: <span className="font-bold text-slate-900 tabular">{rupiah(totalOmset)}</span></div>
+          <div className="flex items-center gap-5 text-sm text-slate-500">
+            <span>Total Omset: <span className="font-bold text-slate-900 tabular">{rupiah(totalOmset)}</span></span>
+            <span>Laba Kotor: <span className={`font-bold tabular ${totalLaba >= 0 ? "text-emerald-600" : "text-red-600"}`}>{rupiah(totalLaba)}</span></span>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -380,6 +384,8 @@ export default function Transaksi() {
                 <th className="text-left py-2.5 px-3">Customer</th>
                 <th className="text-left py-2.5 px-3">Produk</th>
                 <th className="text-right py-2.5 px-3">Total</th>
+                <th className="text-right py-2.5 px-3">HPP</th>
+                <th className="text-right py-2.5 px-3">Laba Kotor</th>
                 <th className="text-center py-2.5 px-3">Status</th>
                 <th className="text-center py-2.5 px-3">Aksi</th>
               </tr>
@@ -397,6 +403,10 @@ export default function Transaksi() {
                     ))}
                   </td>
                   <td className="py-2.5 px-3 text-right font-semibold tabular text-slate-900">{rupiah(t.total)}</td>
+                  <td className="py-2.5 px-3 text-right tabular text-amber-600">{rupiah(t.total_hpp || 0)}</td>
+                  <td className={`py-2.5 px-3 text-right font-semibold tabular ${(t.laba_kotor || 0) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                    {rupiah(t.laba_kotor || 0)}
+                  </td>
                   <td className="py-2.5 px-3 text-center">
                     <button onClick={() => toggleStatus(t)} data-testid={`status-toggle-${t.id}`}>
                       {t.status === "lunas" ? (
@@ -414,7 +424,7 @@ export default function Transaksi() {
                 </tr>
               ))}
               {txns.length === 0 && (
-                <tr><td colSpan={6} className="py-12 text-center text-slate-400">Belum ada transaksi.</td></tr>
+                <tr><td colSpan={8} className="py-12 text-center text-slate-400">Belum ada transaksi.</td></tr>
               )}
             </tbody>
           </table>
