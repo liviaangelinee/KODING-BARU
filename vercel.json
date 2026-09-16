@@ -1,7 +1,7 @@
 {
   "services": {
     "frontend": { "root": "frontend", "framework": "create-react-app" },
-    "backend": { "root": "backend" }
+    "backend": { "root": "backend", "entrypoint": "server:app" }
   },
   "rewrites": [
     { "source": "/api(/.*)?", "destination": { "type": "service", "service": "backend" } },
