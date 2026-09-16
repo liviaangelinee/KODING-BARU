@@ -1,7 +1,10 @@
 {
-  "buildCommand": "cd frontend && yarn install && yarn build",
-  "outputDirectory": "frontend/build",
+  "services": {
+    "frontend": { "root": "frontend", "framework": "create-react-app" },
+    "backend": { "root": "backend" }
+  },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.py" }
+    { "source": "/api(/.*)?", "destination": { "type": "service", "service": "backend" } },
+    { "source": "/(.*)", "destination": { "type": "service", "service": "frontend" } }
   ]
 }
